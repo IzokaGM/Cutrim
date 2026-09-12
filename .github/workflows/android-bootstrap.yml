@@ -4,18 +4,16 @@ on:
   push:
     branches:
       - main
-      - develop
 
   pull_request:
     branches:
       - main
-      - develop
 
   workflow_dispatch:
 
 jobs:
-  build-debug:
-    name: Build Debug APK
+  build:
+    name: Build Cutrim
     runs-on: ubuntu-latest
 
     steps:
@@ -31,19 +29,29 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
+      - name: Check project structure
+        run: |
+          echo "Repository files:"
+          ls -la
+
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew does not exist."
+            echo "Android project has not been added to this repository yet."
+            exit 1
+          fi
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Grant execute permission for Gradle
-        run: chmod +x gradlew
+      - name: Grant execute permission
+        run: chmod +x ./gradlew
 
-      - name: Build Cutrim Debug APK
+      - name: Build Debug APK
         run: ./gradlew assembleDebug
 
       - name: Upload Cutrim APK
         uses: actions/upload-artifact@v4
         with:
-          name: Cutrim-Debug-APK
+          name: Cutrim-Debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 14
