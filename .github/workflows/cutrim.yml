@@ -41,7 +41,7 @@ jobs:
 
           "$SDKMANAGER" \
             "platforms;android-37" \
-            "build-tools;36.0.0"
+            "build-tools;37.0.0"
 
       - name: Bootstrap Cutrim project
         shell: bash
