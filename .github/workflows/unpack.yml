@@ -1,0 +1,26 @@
+name: Unpack CuTrim ZIP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP
+        run: |
+          unzip -o CuTrim_v1_source.zip -d .
+          ls -la
+
+      - name: Commit extracted files
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+
+          git add .
+          git commit -m "Extract CuTrim source files" || echo "No changes"
+          git push
