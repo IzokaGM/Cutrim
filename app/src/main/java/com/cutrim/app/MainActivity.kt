@@ -28,6 +28,20 @@ import android.widget.VideoView
 
 class MainActivity : Activity() {
 
+    data class ClipSegment(
+        val uri: Uri,
+        var startMs: Int,
+        var endMs: Int,
+        val name: String
+    ) {
+        fun lengthMs(): Int = (endMs - startMs).coerceAtLeast(1)
+    }
+
+    data class EditorState(
+        val clips: List<ClipSegment>,
+        val selectedIndex: Int
+    )
+
     private val backgroundColor = Color.rgb(8, 12, 16)
     private val surface = Color.rgb(18, 24, 30)
     private val surfaceAlt = Color.rgb(24, 31, 38)
@@ -36,6 +50,10 @@ class MainActivity : Activity() {
     private val textSecondary = Color.rgb(151, 162, 171)
 
     private val selectedVideos = mutableListOf<Uri>()
+    private val editorClips = mutableListOf<ClipSegment>()
+
+    private val undoStack = mutableListOf<EditorState>()
+    private val redoStack = mutableListOf<EditorState>()
 
     private var selectedListContainer: LinearLayout? = null
     private var selectedCountText: TextView? = null
@@ -56,20 +74,29 @@ class MainActivity : Activity() {
     private val progressUpdater = object : Runnable {
         override fun run() {
             val player = videoView
+            val clip = currentClip()
 
-            if (screen == SCREEN_EDITOR && player != null) {
-                val duration = player.duration.coerceAtLeast(0)
-                val position = player.currentPosition.coerceAtLeast(0)
+            if (screen == SCREEN_EDITOR && player != null && clip != null) {
+                val absolutePosition = player.currentPosition.coerceAtLeast(0)
 
-                if (!userSeeking && duration > 0) {
-                    seekBar?.max = duration
-                    seekBar?.progress = position
+                if (player.isPlaying && absolutePosition >= clip.endMs) {
+                    player.pause()
+                    player.seekTo(clip.endMs)
                 }
 
-                updateTime(position, duration)
+                val relativePosition =
+                    (player.currentPosition - clip.startMs)
+                        .coerceIn(0, clip.lengthMs())
+
+                if (!userSeeking) {
+                    seekBar?.max = clip.lengthMs()
+                    seekBar?.progress = relativePosition
+                }
+
+                updateTime(relativePosition, clip.lengthMs())
                 updatePlayButton()
 
-                progressHandler.postDelayed(this, 250)
+                progressHandler.postDelayed(this, 200)
             }
         }
     }
@@ -173,9 +200,7 @@ class MainActivity : Activity() {
                 topMargin = dp(24)
             }
 
-            setOnClickListener {
-                openVideoPicker()
-            }
+            setOnClickListener { openVideoPicker() }
         })
 
         root.addView(buildSelectedHeader())
@@ -212,14 +237,9 @@ class MainActivity : Activity() {
 
             setOnClickListener {
                 if (selectedVideos.isEmpty()) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Select at least one video.",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    toast("Select at least one video.")
                 } else {
-                    selectedClipIndex = 0
-                    showEditor()
+                    createEditorProject()
                 }
             }
         }
@@ -238,8 +258,31 @@ class MainActivity : Activity() {
         refreshSelectedVideos()
     }
 
+    private fun createEditorProject() {
+        editorClips.clear()
+
+        selectedVideos.forEach { uri ->
+            val duration = getVideoDuration(uri).coerceAtLeast(MIN_CLIP_MS * 2)
+
+            editorClips.add(
+                ClipSegment(
+                    uri = uri,
+                    startMs = 0,
+                    endMs = duration,
+                    name = getDisplayName(uri)
+                )
+            )
+        }
+
+        undoStack.clear()
+        redoStack.clear()
+        selectedClipIndex = 0
+
+        showEditor()
+    }
+
     private fun showEditor() {
-        if (selectedVideos.isEmpty()) {
+        if (editorClips.isEmpty()) {
             showMediaImport()
             return
         }
@@ -247,9 +290,12 @@ class MainActivity : Activity() {
         stopEditorUpdates()
         screen = SCREEN_EDITOR
 
+        selectedClipIndex =
+            selectedClipIndex.coerceIn(0, editorClips.lastIndex)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(18), dp(16), dp(22))
+            setPadding(dp(16), dp(18), dp(16), dp(20))
             setBackgroundColor(backgroundColor)
         }
 
@@ -265,7 +311,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(12)
+                topMargin = dp(8)
                 bottomMargin = dp(8)
             }
         }
@@ -280,15 +326,22 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.BLACK)
 
             setOnPreparedListener {
-                seekBar?.max = it.duration.coerceAtLeast(1)
-                updateTime(0, it.duration)
+                val clip = currentClip() ?: return@setOnPreparedListener
+
+                seekBar?.max = clip.lengthMs()
+                seekBar?.progress = 0
+
+                seekTo(clip.startMs)
+                updateTime(0, clip.lengthMs())
                 updatePlayButton()
             }
 
             setOnCompletionListener {
-                seekTo(0)
+                val clip = currentClip() ?: return@setOnCompletionListener
+
+                seekTo(clip.startMs)
                 updatePlayButton()
-                updateTime(0, duration.coerceAtLeast(0))
+                updateTime(0, clip.lengthMs())
             }
         }
 
@@ -304,7 +357,7 @@ class MainActivity : Activity() {
             previewCard,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(300)
+                dp(270)
             )
         )
 
@@ -316,7 +369,7 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(12)
+                topMargin = dp(10)
             }
         }
 
@@ -329,10 +382,15 @@ class MainActivity : Activity() {
 
             setOnClickListener {
                 val player = videoView ?: return@setOnClickListener
+                val clip = currentClip() ?: return@setOnClickListener
 
                 if (player.isPlaying) {
                     player.pause()
                 } else {
+                    if (player.currentPosition >= clip.endMs - 80) {
+                        player.seekTo(clip.startMs)
+                    }
+
                     player.start()
                 }
 
@@ -342,7 +400,7 @@ class MainActivity : Activity() {
 
         controls.addView(
             playButton,
-            LinearLayout.LayoutParams(dp(62), dp(48))
+            LinearLayout.LayoutParams(dp(62), dp(46))
         )
 
         timeText = TextView(this).apply {
@@ -353,7 +411,7 @@ class MainActivity : Activity() {
 
             layoutParams = LinearLayout.LayoutParams(
                 0,
-                dp(48),
+                dp(46),
                 1f
             ).apply {
                 marginStart = dp(12)
@@ -375,8 +433,13 @@ class MainActivity : Activity() {
                 }
 
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                    val target = seekBar?.progress ?: 0
-                    videoView?.seekTo(target)
+                    val clip = currentClip()
+                    val relative = seekBar?.progress ?: 0
+
+                    if (clip != null) {
+                        videoView?.seekTo(clip.startMs + relative)
+                    }
+
                     userSeeking = false
                 }
 
@@ -388,7 +451,7 @@ class MainActivity : Activity() {
                     if (fromUser) {
                         updateTime(
                             progress,
-                            videoView?.duration?.coerceAtLeast(0) ?: 0
+                            currentClip()?.lengthMs() ?: 0
                         )
                     }
                 }
@@ -399,22 +462,32 @@ class MainActivity : Activity() {
             seekBar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48)
+                dp(42)
             )
         )
 
-        root.addView(sectionTitle("Timeline", 14))
+        root.addView(sectionTitle("Timeline", 8))
 
         root.addView(
             buildTimeline(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(118)
+                dp(104)
             )
         )
 
+        root.addView(
+            buildEditActions(),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+        )
+
         root.addView(TextView(this).apply {
-            text = "Tap a clip to preview it. Trim and Split arrive in V4."
+            text = "Trim, split, delete and reorder are active in V4."
             textSize = 12f
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
@@ -423,16 +496,275 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(12)
+                topMargin = dp(10)
             }
         })
-
-        root.addView(buildEditorToolbar())
 
         setContentView(root)
 
         loadClip(selectedClipIndex)
         startEditorUpdates()
+    }
+
+    private fun buildEditActions(): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        row1.addView(
+            actionButton("Trim Start") { trimStart() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Trim End") { trimEnd() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Split") { splitClip() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Delete") { deleteClip() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        row2.addView(
+            actionButton("← Move") { moveClip(-1) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row2.addView(
+            actionButton("Move →") { moveClip(1) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row2.addView(
+            actionButton("Undo") { undoEdit() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row2.addView(
+            actionButton("Redo") { redoEdit() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(row1)
+        wrap.addView(row2)
+
+        return wrap
+    }
+
+    private fun actionButton(
+        label: String,
+        action: () -> Unit
+    ): Button {
+        return Button(this).apply {
+            text = label
+            textSize = 11f
+            isAllCaps = false
+            setTextColor(textPrimary)
+            backgroundTintList = ColorStateList.valueOf(surfaceAlt)
+            setPadding(dp(3), 0, dp(3), 0)
+
+            setOnClickListener { action() }
+        }
+    }
+
+    private fun trimStart() {
+        val clip = currentClip() ?: return
+        val position = videoView?.currentPosition ?: clip.startMs
+
+        if (position <= clip.startMs + MIN_CLIP_MS) {
+            toast("Move the playhead further right first.")
+            return
+        }
+
+        if (position >= clip.endMs - MIN_CLIP_MS) {
+            toast("Trim would make the clip too short.")
+            return
+        }
+
+        pushUndo()
+        clip.startMs = position
+        loadClip(selectedClipIndex)
+        toast("Trim start applied.")
+    }
+
+    private fun trimEnd() {
+        val clip = currentClip() ?: return
+        val position = videoView?.currentPosition ?: clip.endMs
+
+        if (position >= clip.endMs - MIN_CLIP_MS) {
+            toast("Move the playhead left first.")
+            return
+        }
+
+        if (position <= clip.startMs + MIN_CLIP_MS) {
+            toast("Trim would make the clip too short.")
+            return
+        }
+
+        pushUndo()
+        clip.endMs = position
+        loadClip(selectedClipIndex)
+        toast("Trim end applied.")
+    }
+
+    private fun splitClip() {
+        val clip = currentClip() ?: return
+        val position = videoView?.currentPosition ?: clip.startMs
+
+        if (
+            position <= clip.startMs + MIN_CLIP_MS ||
+            position >= clip.endMs - MIN_CLIP_MS
+        ) {
+            toast("Move the playhead away from the clip edges.")
+            return
+        }
+
+        pushUndo()
+
+        val left = clip.copy(endMs = position)
+        val right = clip.copy(startMs = position)
+
+        editorClips[selectedClipIndex] = left
+        editorClips.add(selectedClipIndex + 1, right)
+
+        selectedClipIndex += 1
+        showEditor()
+        toast("Clip split.")
+    }
+
+    private fun deleteClip() {
+        if (editorClips.isEmpty()) return
+
+        pushUndo()
+        editorClips.removeAt(selectedClipIndex)
+
+        if (editorClips.isEmpty()) {
+            toast("Timeline is empty.")
+            showMediaImport()
+            return
+        }
+
+        selectedClipIndex =
+            selectedClipIndex.coerceAtMost(editorClips.lastIndex)
+
+        showEditor()
+    }
+
+    private fun moveClip(direction: Int) {
+        val target = selectedClipIndex + direction
+
+        if (target !in editorClips.indices) {
+            toast("Clip cannot move further.")
+            return
+        }
+
+        pushUndo()
+
+        val moving = editorClips.removeAt(selectedClipIndex)
+        editorClips.add(target, moving)
+        selectedClipIndex = target
+
+        showEditor()
+    }
+
+    private fun pushUndo() {
+        undoStack.add(snapshotState())
+
+        if (undoStack.size > MAX_HISTORY) {
+            undoStack.removeAt(0)
+        }
+
+        redoStack.clear()
+    }
+
+    private fun undoEdit() {
+        if (undoStack.isEmpty()) {
+            toast("Nothing to undo.")
+            return
+        }
+
+        redoStack.add(snapshotState())
+        restoreState(undoStack.removeAt(undoStack.lastIndex))
+        showEditor()
+    }
+
+    private fun redoEdit() {
+        if (redoStack.isEmpty()) {
+            toast("Nothing to redo.")
+            return
+        }
+
+        undoStack.add(snapshotState())
+        restoreState(redoStack.removeAt(redoStack.lastIndex))
+        showEditor()
+    }
+
+    private fun snapshotState(): EditorState {
+        return EditorState(
+            clips = editorClips.map { it.copy() },
+            selectedIndex = selectedClipIndex
+        )
+    }
+
+    private fun restoreState(state: EditorState) {
+        editorClips.clear()
+        editorClips.addAll(state.clips.map { it.copy() })
+
+        selectedClipIndex =
+            if (editorClips.isEmpty()) {
+                0
+            } else {
+                state.selectedIndex.coerceIn(0, editorClips.lastIndex)
+            }
+    }
+
+    private fun currentClip(): ClipSegment? {
+        return editorClips.getOrNull(selectedClipIndex)
     }
 
     private fun buildEditorHeader(): View {
@@ -450,9 +782,8 @@ class MainActivity : Activity() {
             isFocusable = true
             contentDescription = "Back"
 
-            setOnClickListener {
-                showMediaImport()
-            }
+            setOnClickListener { showMediaImport() }
+
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
 
         row.addView(TextView(this).apply {
@@ -469,7 +800,7 @@ class MainActivity : Activity() {
         ))
 
         row.addView(TextView(this).apply {
-            text = "V3"
+            text = "V4"
             textSize = 12f
             setTextColor(primary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
@@ -490,10 +821,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        selectedVideos.forEachIndexed { index, uri ->
+        editorClips.forEachIndexed { index, clip ->
             row.addView(
-                buildTimelineClip(uri, index),
-                LinearLayout.LayoutParams(dp(128), dp(104)).apply {
+                buildTimelineClip(clip, index),
+                LinearLayout.LayoutParams(dp(128), dp(94)).apply {
                     marginEnd = dp(10)
                 }
             )
@@ -510,11 +841,14 @@ class MainActivity : Activity() {
         return scroll
     }
 
-    private fun buildTimelineClip(uri: Uri, index: Int): View {
+    private fun buildTimelineClip(
+        clip: ClipSegment,
+        index: Int
+    ): View {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(dp(4), dp(4), dp(4), dp(6))
+            setPadding(dp(4), dp(4), dp(4), dp(5))
 
             background = if (index == selectedClipIndex) {
                 roundedBorderBackground(surfaceAlt, primary, 16, 2)
@@ -527,7 +861,6 @@ class MainActivity : Activity() {
 
             setOnClickListener {
                 selectedClipIndex = index
-                loadClip(index)
                 showEditor()
             }
         }
@@ -538,7 +871,7 @@ class MainActivity : Activity() {
             contentDescription = "Timeline clip thumbnail"
         }
 
-        val bitmap = getVideoThumbnail(uri)
+        val bitmap = getVideoThumbnail(clip.uri, clip.startMs)
 
         if (bitmap != null) {
             thumbnail.setImageBitmap(bitmap)
@@ -551,109 +884,42 @@ class MainActivity : Activity() {
             thumbnail,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(70)
+                dp(60)
             )
         )
 
         card.addView(TextView(this).apply {
-            text = "Clip ${index + 1}"
-            textSize = 11f
+            text = "${index + 1}  ${formatTime(clip.lengthMs())}"
+            textSize = 10f
             maxLines = 1
             gravity = Gravity.CENTER
             setTextColor(
                 if (index == selectedClipIndex) primary else textSecondary
             )
+
         }, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            dp(26)
+            dp(25)
         ))
 
         return card
     }
 
-    private fun buildEditorToolbar(): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = roundedBackground(surface, 18)
-
-            setPadding(dp(8), dp(10), dp(8), dp(10))
-
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(72)
-            ).apply {
-                topMargin = dp(18)
-            }
-        }
-
-        row.addView(
-            editorTool("✂", "Trim"),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-        )
-
-        row.addView(
-            editorTool("Ⅱ", "Split"),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-        )
-
-        row.addView(
-            editorTool("T", "Text"),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-        )
-
-        row.addView(
-            editorTool("♪", "Audio"),
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-        )
-
-        return row
-    }
-
-    private fun editorTool(symbol: String, label: String): View {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            isClickable = true
-            isFocusable = true
-
-            addView(TextView(this@MainActivity).apply {
-                text = symbol
-                textSize = 18f
-                gravity = Gravity.CENTER
-                setTextColor(textPrimary)
-            })
-
-            addView(TextView(this@MainActivity).apply {
-                text = label
-                textSize = 11f
-                gravity = Gravity.CENTER
-                setTextColor(textSecondary)
-            })
-
-            setOnClickListener {
-                Toast.makeText(
-                    this@MainActivity,
-                    "$label will be activated in a later milestone.",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
-    }
-
     private fun loadClip(index: Int) {
-        if (index !in selectedVideos.indices) return
+        val clip = editorClips.getOrNull(index) ?: return
 
-        val uri = selectedVideos[index]
-        editorClipTitle?.text = getDisplayName(uri)
+        editorClipTitle?.text =
+            "${clip.name}  •  ${formatTime(clip.lengthMs())}"
 
         videoView?.apply {
             stopPlayback()
-            setVideoURI(uri)
-            seekTo(1)
+            setVideoURI(clip.uri)
         }
 
+        seekBar?.max = clip.lengthMs()
         seekBar?.progress = 0
+
+        updateTime(0, clip.lengthMs())
         updatePlayButton()
     }
 
@@ -678,18 +944,23 @@ class MainActivity : Activity() {
     }
 
     private fun updatePlayButton() {
-        playButton?.text = if (videoView?.isPlaying == true) "❚❚" else "▶"
+        playButton?.text =
+            if (videoView?.isPlaying == true) "❚❚" else "▶"
     }
 
-    private fun updateTime(positionMs: Int, durationMs: Int) {
+    private fun updateTime(
+        positionMs: Int,
+        durationMs: Int
+    ) {
         timeText?.text =
             "${formatTime(positionMs)} / ${formatTime(durationMs)}"
     }
 
     private fun formatTime(milliseconds: Int): String {
-        val totalSeconds = (milliseconds.coerceAtLeast(0) / 1000)
+        val totalSeconds = milliseconds.coerceAtLeast(0) / 1000
         val minutes = totalSeconds / 60
         val seconds = totalSeconds % 60
+
         return String.format("%02d:%02d", minutes, seconds)
     }
 
@@ -708,9 +979,7 @@ class MainActivity : Activity() {
             isFocusable = true
             contentDescription = "Back"
 
-            setOnClickListener {
-                showHome()
-            }
+            setOnClickListener { showHome() }
 
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
 
@@ -809,7 +1078,10 @@ class MainActivity : Activity() {
         createProjectButton?.let { updateCreateButtonStyle(it) }
     }
 
-    private fun buildSelectedVideoCard(uri: Uri, index: Int): View {
+    private fun buildSelectedVideoCard(
+        uri: Uri,
+        index: Int
+    ): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -823,7 +1095,7 @@ class MainActivity : Activity() {
             contentDescription = "Video thumbnail"
         }
 
-        val bitmap = getVideoThumbnail(uri)
+        val bitmap = getVideoThumbnail(uri, 0)
 
         if (bitmap != null) {
             thumbnail.setImageBitmap(bitmap)
@@ -852,7 +1124,7 @@ class MainActivity : Activity() {
         })
 
         textWrap.addView(TextView(this).apply {
-            text = "Video ready"
+            text = formatTime(getVideoDuration(uri))
             textSize = 12f
             setTextColor(textSecondary)
 
@@ -904,7 +1176,7 @@ class MainActivity : Activity() {
         startActivityForResult(intent, REQUEST_VIDEO)
     }
 
-    @Deprecated("Used for V3 without extra dependencies")
+    @Deprecated("Used without extra dependencies")
     override fun onActivityResult(
         requestCode: Int,
         resultCode: Int,
@@ -921,7 +1193,6 @@ class MainActivity : Activity() {
         }
 
         val incoming = mutableListOf<Uri>()
-
         val clips = data.clipData
 
         if (clips != null) {
@@ -988,7 +1259,8 @@ class MainActivity : Activity() {
                 null,
                 null
             )?.use { cursor ->
-                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                val index =
+                    cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
 
                 if (index >= 0 && cursor.moveToFirst()) {
                     return cursor.getString(index) ?: "Video"
@@ -1000,12 +1272,35 @@ class MainActivity : Activity() {
         return "Video"
     }
 
-    private fun getVideoThumbnail(uri: Uri) = try {
+    private fun getVideoDuration(uri: Uri): Int {
+        return try {
+            val retriever = MediaMetadataRetriever()
+            retriever.setDataSource(this, uri)
+
+            val duration = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_DURATION
+            )?.toLongOrNull() ?: 0L
+
+            retriever.release()
+
+            duration
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt()
+
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun getVideoThumbnail(
+        uri: Uri,
+        timeMs: Int
+    ) = try {
         val retriever = MediaMetadataRetriever()
         retriever.setDataSource(this, uri)
 
         val bitmap = retriever.getFrameAtTime(
-            0,
+            timeMs.toLong() * 1000L,
             MediaMetadataRetriever.OPTION_CLOSEST_SYNC
         )
 
@@ -1022,9 +1317,8 @@ class MainActivity : Activity() {
             button.backgroundTintList = ColorStateList.valueOf(primary)
         } else {
             button.setTextColor(Color.rgb(125, 135, 141))
-            button.backgroundTintList = ColorStateList.valueOf(
-                Color.rgb(35, 42, 48)
-            )
+            button.backgroundTintList =
+                ColorStateList.valueOf(Color.rgb(35, 42, 48))
         }
     }
 
@@ -1126,9 +1420,7 @@ class MainActivity : Activity() {
                 topMargin = dp(24)
             }
 
-            setOnClickListener {
-                showMediaImport()
-            }
+            setOnClickListener { showMediaImport() }
         })
 
         return card
@@ -1146,11 +1438,7 @@ class MainActivity : Activity() {
                 title = "Templates",
                 subtitle = "Ready-made styles"
             ) {
-                Toast.makeText(
-                    this,
-                    "Templates will be activated in a later milestone.",
-                    Toast.LENGTH_SHORT
-                ).show()
+                toast("Templates arrive in a later milestone.")
             },
             LinearLayout.LayoutParams(0, dp(132), 1f).apply {
                 marginEnd = dp(7)
@@ -1327,14 +1615,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun toast(message: String) {
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
     private fun dp(value: Int): Int {
         return (value * resources.displayMetrics.density).toInt()
     }
 
     companion object {
         private const val REQUEST_VIDEO = 1001
+
         private const val SCREEN_HOME = 0
         private const val SCREEN_MEDIA = 1
         private const val SCREEN_EDITOR = 2
+
+        private const val MIN_CLIP_MS = 250
+        private const val MAX_HISTORY = 30
     }
 }
