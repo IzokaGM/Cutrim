@@ -37,7 +37,12 @@ class MainActivity : Activity() {
         val uri: Uri,
         var startMs: Int,
         var endMs: Int,
-        val name: String
+        val name: String,
+        var filterName: String = "None",
+        var transitionName: String = "None",
+        var effectName: String = "None",
+        var speed: Float = 1f,
+        var stickers: List<String> = emptyList()
     ) {
         fun lengthMs(): Int = (endMs - startMs).coerceAtLeast(1)
     }
@@ -90,6 +95,8 @@ class MainActivity : Activity() {
     private var timeText: TextView? = null
     private var editorClipTitle: TextView? = null
     private var overlayLayer: FrameLayout? = null
+    private var filterOverlay: View? = null
+    private var creativeStatusText: TextView? = null
     private var audioStatusText: TextView? = null
     private var audioVolumeSeek: SeekBar? = null
     private var audioPlayer: MediaPlayer? = null
@@ -357,8 +364,14 @@ class MainActivity : Activity() {
         videoView = VideoView(this).apply {
             setBackgroundColor(Color.BLACK)
 
-            setOnPreparedListener {
+            setOnPreparedListener { mediaPlayer ->
                 val clip = currentClip() ?: return@setOnPreparedListener
+
+                try {
+                    mediaPlayer.playbackParams =
+                        mediaPlayer.playbackParams.setSpeed(clip.speed)
+                } catch (_: Exception) {
+                }
 
                 seekBar?.max = clip.lengthMs()
                 seekBar?.progress = 0
@@ -385,6 +398,15 @@ class MainActivity : Activity() {
             )
         )
 
+        filterOverlay = View(this)
+        previewCard.addView(
+            filterOverlay,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
         overlayLayer = FrameLayout(this)
         previewCard.addView(
             overlayLayer,
@@ -393,6 +415,8 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+
+        refreshCreativePreview()
         refreshTextOverlays()
 
         root.addView(
@@ -528,6 +552,9 @@ class MainActivity : Activity() {
             }
         )
 
+        root.addView(sectionTitle("Creative Tools", 12))
+        root.addView(buildCreativeTools())
+
         root.addView(sectionTitle("Text", 12))
         root.addView(buildTextTools())
 
@@ -535,7 +562,7 @@ class MainActivity : Activity() {
         root.addView(buildAudioTools())
 
         root.addView(TextView(this).apply {
-            text = "Text and audio settings are stored in the project. Final render arrives in V7."
+            text = "Creative, text and audio settings are stored in the project. Final render arrives in V7."
             textSize = 12f
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
@@ -794,14 +821,14 @@ class MainActivity : Activity() {
 
     private fun snapshotState(): EditorState {
         return EditorState(
-            clips = editorClips.map { it.copy() },
+            clips = editorClips.map { it.copy(stickers = it.stickers.toList()) },
             selectedIndex = selectedClipIndex
         )
     }
 
     private fun restoreState(state: EditorState) {
         editorClips.clear()
-        editorClips.addAll(state.clips.map { it.copy() })
+        editorClips.addAll(state.clips.map { it.copy(stickers = it.stickers.toList()) })
 
         selectedClipIndex =
             if (editorClips.isEmpty()) {
@@ -815,6 +842,272 @@ class MainActivity : Activity() {
         return editorClips.getOrNull(selectedClipIndex)
     }
 
+
+
+    private fun buildCreativeTools(): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+
+        val row1 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        row1.addView(
+            actionButton("Filter") { cycleFilter() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Transition") { cycleTransition() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Effect") { cycleEffect() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row1.addView(
+            actionButton("Sticker") { addSticker() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(row1)
+
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        row2.addView(
+            actionButton("Speed -") { changeSpeed(-1) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row2.addView(
+            actionButton("Speed +") { changeSpeed(1) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row2.addView(
+            actionButton("Remove Sticker") { removeSticker() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(row2)
+
+        creativeStatusText = TextView(this).apply {
+            text = currentCreativeLabel()
+            textSize = 12f
+            setTextColor(textSecondary)
+            setPadding(dp(4), dp(10), dp(4), dp(2))
+        }
+
+        wrap.addView(creativeStatusText)
+        return wrap
+    }
+
+    private fun cycleFilter() {
+        val clip = currentClip() ?: return
+        pushUndo()
+
+        val options = listOf("None", "Warm", "Cool", "Mono", "Vintage")
+        val current = options.indexOf(clip.filterName).coerceAtLeast(0)
+        clip.filterName = options[(current + 1) % options.size]
+
+        refreshCreativePreview()
+        refreshCreativeStatus()
+    }
+
+    private fun cycleTransition() {
+        val clip = currentClip() ?: return
+        pushUndo()
+
+        val options = listOf("None", "Fade", "Dissolve", "Slide", "Zoom")
+        val current = options.indexOf(clip.transitionName).coerceAtLeast(0)
+        clip.transitionName = options[(current + 1) % options.size]
+
+        refreshCreativeStatus()
+    }
+
+    private fun cycleEffect() {
+        val clip = currentClip() ?: return
+        pushUndo()
+
+        val options = listOf("None", "Flash", "Dream", "Retro", "Cinema")
+        val current = options.indexOf(clip.effectName).coerceAtLeast(0)
+        clip.effectName = options[(current + 1) % options.size]
+
+        refreshCreativePreview()
+        refreshCreativeStatus()
+    }
+
+    private fun addSticker() {
+        val clip = currentClip() ?: return
+        pushUndo()
+
+        val options = listOf("✨", "❤️", "🔥", "😎", "🎬")
+        val next = options[clip.stickers.size % options.size]
+        clip.stickers = clip.stickers + next
+
+        refreshCreativePreview()
+        refreshCreativeStatus()
+    }
+
+    private fun removeSticker() {
+        val clip = currentClip() ?: return
+
+        if (clip.stickers.isEmpty()) {
+            toast("No sticker on this clip.")
+            return
+        }
+
+        pushUndo()
+        clip.stickers = clip.stickers.dropLast(1)
+
+        refreshCreativePreview()
+        refreshCreativeStatus()
+    }
+
+    private fun changeSpeed(direction: Int) {
+        val clip = currentClip() ?: return
+        val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+
+        var current = speeds.indexOfFirst {
+            kotlin.math.abs(it - clip.speed) < 0.01f
+        }
+        if (current < 0) current = 2
+
+        val next = (current + direction).coerceIn(0, speeds.lastIndex)
+
+        if (next == current) {
+            toast("Speed limit reached.")
+            return
+        }
+
+        pushUndo()
+        clip.speed = speeds[next]
+
+        refreshCreativeStatus()
+        loadClip(selectedClipIndex)
+    }
+
+    private fun currentCreativeLabel(): String {
+        val clip = currentClip() ?: return "No clip selected"
+
+        return "Filter: ${clip.filterName}  •  " +
+            "Transition: ${clip.transitionName}  •  " +
+            "Effect: ${clip.effectName}  •  " +
+            "Speed: ${clip.speed}x  •  " +
+            "Stickers: ${clip.stickers.size}"
+    }
+
+    private fun refreshCreativeStatus() {
+        creativeStatusText?.text = currentCreativeLabel()
+    }
+
+    private fun refreshCreativePreview() {
+        val clip = currentClip() ?: return
+
+        val tint = when (clip.filterName) {
+            "Warm" -> Color.argb(55, 255, 120, 45)
+            "Cool" -> Color.argb(55, 45, 130, 255)
+            "Mono" -> Color.argb(75, 110, 110, 110)
+            "Vintage" -> Color.argb(60, 150, 105, 55)
+            else -> Color.TRANSPARENT
+        }
+
+        filterOverlay?.setBackgroundColor(tint)
+
+        val layer = overlayLayer ?: return
+        val removeViews = mutableListOf<View>()
+
+        for (i in 0 until layer.childCount) {
+            val child = layer.getChildAt(i)
+            if (child.tag == "creative") {
+                removeViews.add(child)
+            }
+        }
+
+        removeViews.forEach { layer.removeView(it) }
+
+        clip.stickers.forEachIndexed { index, sticker ->
+            val stickerView = TextView(this).apply {
+                text = sticker
+                textSize = 28f
+                tag = "creative"
+                gravity = Gravity.CENTER
+            }
+
+            val horizontal =
+                if (index % 2 == 0) Gravity.START else Gravity.END
+            val vertical =
+                if ((index / 2) % 2 == 0) Gravity.TOP else Gravity.BOTTOM
+
+            layer.addView(
+                stickerView,
+                FrameLayout.LayoutParams(
+                    dp(64),
+                    dp(64),
+                    horizontal or vertical
+                ).apply {
+                    leftMargin = dp(14)
+                    rightMargin = dp(14)
+                    topMargin = dp(14)
+                    bottomMargin = dp(14)
+                }
+            )
+        }
+
+        if (clip.effectName != "None") {
+            layer.addView(
+                TextView(this).apply {
+                    text = clip.effectName.uppercase()
+                    textSize = 10f
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(7), dp(4), dp(7), dp(4))
+                    background = roundedBackground(
+                        Color.argb(120, 0, 0, 0),
+                        6
+                    )
+                    tag = "creative"
+                },
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.END or Gravity.TOP
+                ).apply {
+                    topMargin = dp(10)
+                    rightMargin = dp(10)
+                }
+            )
+        }
+    }
 
     private fun buildTextTools(): View {
         val row = LinearLayout(this).apply {
@@ -983,6 +1276,8 @@ class MainActivity : Activity() {
                 }
             )
         }
+
+        refreshCreativePreview()
     }
 
     private fun buildAudioTools(): View {
@@ -1242,7 +1537,7 @@ class MainActivity : Activity() {
         ))
 
         row.addView(TextView(this).apply {
-            text = "V5"
+            text = "V6"
             textSize = 12f
             setTextColor(primary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
@@ -1353,6 +1648,9 @@ class MainActivity : Activity() {
         editorClipTitle?.text =
             "${clip.name}  •  ${formatTime(clip.lengthMs())}"
 
+        refreshCreativePreview()
+        refreshCreativeStatus()
+
         videoView?.apply {
             stopPlayback()
             setVideoURI(clip.uri)
@@ -1385,6 +1683,8 @@ class MainActivity : Activity() {
         timeText = null
         editorClipTitle = null
         overlayLayer = null
+        filterOverlay = null
+        creativeStatusText = null
         audioStatusText = null
         audioVolumeSeek = null
     }
