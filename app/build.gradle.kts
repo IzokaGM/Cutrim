@@ -12,7 +12,13 @@ android {
         minSdk = 26
         targetSdk = 37
 
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 7
+        versionName = "0.7.0"
     }
+}
+
+dependencies {
+    implementation("androidx.media3:media3-common:1.11.0")
+    implementation("androidx.media3:media3-effect:1.11.0")
+    implementation("androidx.media3:media3-transformer:1.11.0")
 }

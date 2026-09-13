@@ -1,6 +1,38 @@
 package com.cutrim.app
 
 import android.app.Activity
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.AbsoluteSizeSpan
+import android.text.style.ForegroundColorSpan
+import java.io.File
+import androidx.media3.common.C
+import androidx.media3.common.Effect
+import androidx.media3.common.MediaItem
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
+import androidx.media3.common.audio.DefaultGainProvider
+import androidx.media3.common.audio.GainProcessor
+import androidx.media3.common.audio.SpeedProvider
+import androidx.media3.common.audio.ToInt16PcmAudioProcessor
+import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.Presentation
+import androidx.media3.effect.RgbAdjustment
+import androidx.media3.effect.RgbFilter
+import androidx.media3.effect.TextOverlay as Media3TextOverlay
+import androidx.media3.effect.TextureOverlay
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
+import androidx.media3.transformer.Effects
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -31,6 +63,7 @@ import android.widget.Toast
 import android.app.AlertDialog
 import android.widget.VideoView
 
+@androidx.media3.common.util.UnstableApi
 class MainActivity : Activity() {
 
     data class ClipSegment(
@@ -105,7 +138,18 @@ class MainActivity : Activity() {
     private var pendingAudioType = "Music"
     private var userSeeking = false
 
+    private var exportHeight = 720
+    private var exportFps = 30
+    private var exporter: Transformer? = null
+    private var exportRunning = false
+    private var currentExportFile: File? = null
+    private var exportStatusText: TextView? = null
+    private var exportProgressBar: SeekBar? = null
+    private var exportResolutionButton: Button? = null
+    private var exportFpsButton: Button? = null
+
     private val progressHandler = Handler(Looper.getMainLooper())
+    private val exportHandler = Handler(Looper.getMainLooper())
 
     private val progressUpdater = object : Runnable {
         override fun run() {
@@ -133,6 +177,32 @@ class MainActivity : Activity() {
                 updatePlayButton()
 
                 progressHandler.postDelayed(this, 200)
+            }
+        }
+    }
+
+    private val exportProgressUpdater = object : Runnable {
+        override fun run() {
+            if (!exportRunning) {
+                return
+            }
+
+            val activeExporter = exporter
+            if (activeExporter != null) {
+                try {
+                    val holder = ProgressHolder()
+                    val state = activeExporter.getProgress(holder)
+
+                    if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
+                        exportProgressBar?.progress = holder.progress
+                        exportStatusText?.text = "Exporting ${holder.progress}%"
+                    }
+                } catch (_: Exception) {
+                }
+            }
+
+            if (exportRunning) {
+                exportHandler.postDelayed(this, 400)
             }
         }
     }
@@ -331,6 +401,11 @@ class MainActivity : Activity() {
 
         selectedClipIndex =
             selectedClipIndex.coerceIn(0, editorClips.lastIndex)
+
+        val editorScroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(backgroundColor)
+        }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -552,6 +627,9 @@ class MainActivity : Activity() {
             }
         )
 
+        root.addView(sectionTitle("Export", 12))
+        root.addView(buildExportTools())
+
         root.addView(sectionTitle("Creative Tools", 12))
         root.addView(buildCreativeTools())
 
@@ -562,7 +640,7 @@ class MainActivity : Activity() {
         root.addView(buildAudioTools())
 
         root.addView(TextView(this).apply {
-            text = "Creative, text and audio settings are stored in the project. Final render arrives in V7."
+            text = "V7 exports the edited timeline as a real MP4 file."
             textSize = 12f
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
@@ -575,7 +653,15 @@ class MainActivity : Activity() {
             }
         })
 
-        setContentView(root)
+        editorScroll.addView(
+            root,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        setContentView(editorScroll)
 
         loadClip(selectedClipIndex)
         startEditorUpdates()
@@ -843,6 +929,573 @@ class MainActivity : Activity() {
     }
 
 
+
+
+    private fun buildExportTools(): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+
+        val settingsRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        exportResolutionButton = actionButton(
+            "Resolution: ${exportHeight}p"
+        ) {
+            if (exportRunning) {
+                toast("Wait for the current export to finish.")
+                return@actionButton
+            }
+
+            exportHeight = if (exportHeight == 720) 1080 else 720
+            exportResolutionButton?.text = "Resolution: ${exportHeight}p"
+        }
+
+        settingsRow.addView(
+            exportResolutionButton,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        exportFpsButton = actionButton(
+            "FPS: $exportFps"
+        ) {
+            if (exportRunning) {
+                toast("Wait for the current export to finish.")
+                return@actionButton
+            }
+
+            exportFps = if (exportFps == 30) 60 else 30
+            exportFpsButton?.text = "FPS: $exportFps"
+        }
+
+        settingsRow.addView(
+            exportFpsButton,
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(settingsRow)
+
+        wrap.addView(
+            Button(this).apply {
+                text = "Export MP4"
+                textSize = 14f
+                isAllCaps = false
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                setTextColor(Color.rgb(4, 24, 21))
+                backgroundTintList = ColorStateList.valueOf(primary)
+
+                setOnClickListener {
+                    startMp4Export()
+                }
+            },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(52)
+            ).apply {
+                topMargin = dp(8)
+            }
+        )
+
+        exportProgressBar = SeekBar(this).apply {
+            max = 100
+            progress = 0
+            isEnabled = false
+            progressTintList = ColorStateList.valueOf(primary)
+        }
+
+        wrap.addView(
+            exportProgressBar,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(34)
+            )
+        )
+
+        exportStatusText = TextView(this).apply {
+            text = if (exportRunning) "Export in progress…" else "Ready to export"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(textSecondary)
+        }
+
+        wrap.addView(exportStatusText)
+
+        return wrap
+    }
+
+    private fun startMp4Export() {
+        if (exportRunning) {
+            toast("Export already running.")
+            return
+        }
+
+        if (editorClips.isEmpty()) {
+            toast("Timeline is empty.")
+            return
+        }
+
+        stopAudioPreview()
+
+        try {
+            videoView?.pause()
+            updatePlayButton()
+        } catch (_: Exception) {
+        }
+
+        val composition = try {
+            buildExportComposition()
+        } catch (e: Exception) {
+            toast("Unable to prepare export: ${e.message ?: "unknown error"}")
+            return
+        }
+
+        val tempFile = File(
+            cacheDir,
+            "cutrim_export_${System.currentTimeMillis()}.mp4"
+        )
+
+        if (tempFile.exists()) {
+            tempFile.delete()
+        }
+
+        currentExportFile = tempFile
+        exportRunning = true
+        exportProgressBar?.progress = 0
+        exportStatusText?.text = "Preparing export…"
+
+        val listener = object : Transformer.Listener {
+            override fun onCompleted(
+                composition: Composition,
+                exportResult: ExportResult
+            ) {
+                exportRunning = false
+                exportHandler.removeCallbacks(exportProgressUpdater)
+
+                exportProgressBar?.progress = 100
+                exportStatusText?.text = "Saving MP4…"
+
+                val saved = publishExport(tempFile)
+
+                if (saved) {
+                    exportStatusText?.text =
+                        "Saved to Movies/Cutrim"
+                    toast("Export complete: Movies/Cutrim")
+                } else {
+                    exportStatusText?.text =
+                        "Export finished, but save failed"
+                    toast("Unable to save exported MP4.")
+                }
+
+                exporter = null
+                currentExportFile = null
+            }
+
+            override fun onError(
+                composition: Composition,
+                exportResult: ExportResult,
+                exportException: ExportException
+            ) {
+                exportRunning = false
+                exportHandler.removeCallbacks(exportProgressUpdater)
+
+                exportStatusText?.text = "Export failed"
+                tempFile.delete()
+
+                toast(
+                    "Export failed: " +
+                        (exportException.message ?: "unknown error")
+                )
+
+                exporter = null
+                currentExportFile = null
+            }
+        }
+
+        try {
+            exporter = Transformer.Builder(this)
+                .addListener(listener)
+                .build()
+
+            exporter?.start(composition, tempFile.absolutePath)
+
+            exportHandler.removeCallbacks(exportProgressUpdater)
+            exportHandler.post(exportProgressUpdater)
+        } catch (e: Exception) {
+            exportRunning = false
+            exporter = null
+            tempFile.delete()
+            exportStatusText?.text = "Export failed"
+
+            toast("Export failed: ${e.message ?: "unknown error"}")
+        }
+    }
+
+    private fun buildExportComposition(): Composition {
+        val editedItems = mutableListOf<EditedMediaItem>()
+
+        editorClips.forEach { clip ->
+            val clipping = MediaItem.ClippingConfiguration.Builder()
+                .setStartPositionMs(clip.startMs.toLong())
+                .setEndPositionMs(clip.endMs.toLong())
+                .build()
+
+            val mediaItem = MediaItem.Builder()
+                .setUri(clip.uri)
+                .setClippingConfiguration(clipping)
+                .build()
+
+            val videoEffects = buildExportVideoEffects(clip)
+            val audioProcessors =
+                buildStereoAudioProcessors(
+                    volume = 1f,
+                    fadeIn = false,
+                    fadeOut = false,
+                    durationMs = clip.lengthMs().toLong()
+                )
+
+            val builder = EditedMediaItem.Builder(mediaItem)
+                .setFrameRate(exportFps)
+                .setEffects(
+                    Effects(
+                        audioProcessors,
+                        videoEffects
+                    )
+                )
+
+            if (kotlin.math.abs(clip.speed - 1f) > 0.001f) {
+                builder.setSpeed(
+                    object : SpeedProvider {
+                        override fun getSpeed(timeUs: Long): Float {
+                            return clip.speed
+                        }
+
+                        override fun getNextSpeedChangeTimeUs(
+                            timeUs: Long
+                        ): Long {
+                            return C.TIME_UNSET
+                        }
+                    }
+                )
+            }
+
+            editedItems.add(builder.build())
+        }
+
+        val sequences = mutableListOf<EditedMediaItemSequence>()
+
+        sequences.add(
+            EditedMediaItemSequence.withAudioAndVideoFrom(editedItems)
+        )
+
+        audioTracks.forEach { track ->
+            val audioDuration =
+                getVideoDuration(track.uri).toLong().coerceAtLeast(1000L)
+
+            val audioItem = EditedMediaItem.Builder(
+                MediaItem.fromUri(track.uri)
+            )
+                .setEffects(
+                    Effects(
+                        buildStereoAudioProcessors(
+                            volume = track.volume,
+                            fadeIn = track.fadeIn,
+                            fadeOut = track.fadeOut,
+                            durationMs = audioDuration
+                        ),
+                        emptyList()
+                    )
+                )
+                .build()
+
+            var audioSequence =
+                EditedMediaItemSequence.withAudioFrom(
+                    listOf(audioItem)
+                )
+
+            if (track.type == "Music") {
+                audioSequence =
+                    audioSequence
+                        .buildUpon()
+                        .setIsLooping(true)
+                        .build()
+            }
+
+            sequences.add(audioSequence)
+        }
+
+        return Composition.Builder(sequences).build()
+    }
+
+    private fun buildStereoAudioProcessors(
+        volume: Float,
+        fadeIn: Boolean,
+        fadeOut: Boolean,
+        durationMs: Long
+    ): List<androidx.media3.common.audio.AudioProcessor> {
+        val processors =
+            mutableListOf<androidx.media3.common.audio.AudioProcessor>()
+
+        processors.add(ToInt16PcmAudioProcessor())
+
+        val mixer = ChannelMixingAudioProcessor()
+
+        for (channels in 1..6) {
+            try {
+                mixer.putChannelMixingMatrix(
+                    ChannelMixingMatrix.createForConstantPower(
+                        channels,
+                        2
+                    )
+                )
+            } catch (_: Exception) {
+            }
+        }
+
+        processors.add(mixer)
+
+        val safeVolume = volume.coerceIn(0f, 1f)
+        val gainBuilder = DefaultGainProvider.Builder(safeVolume)
+
+        val durationUs = durationMs.coerceAtLeast(1L) * 1000L
+        val fadeUs =
+            minOf(1_000_000L, (durationUs / 3L).coerceAtLeast(1L))
+
+        if (fadeIn) {
+            gainBuilder.addFadeAt(
+                0L,
+                fadeUs,
+                DefaultGainProvider.FADE_IN_LINEAR
+            )
+        }
+
+        if (fadeOut) {
+            gainBuilder.addFadeAt(
+                (durationUs - fadeUs).coerceAtLeast(0L),
+                fadeUs,
+                DefaultGainProvider.FADE_OUT_LINEAR
+            )
+        }
+
+        processors.add(
+            GainProcessor(gainBuilder.build())
+        )
+
+        return processors
+    }
+
+    private fun buildExportVideoEffects(
+        clip: ClipSegment
+    ): List<Effect> {
+        val effects = mutableListOf<Effect>()
+
+        when (clip.filterName) {
+            "Warm" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.12f)
+                    .setGreenScale(1.02f)
+                    .setBlueScale(0.90f)
+                    .build()
+            )
+
+            "Cool" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(0.90f)
+                    .setGreenScale(1.02f)
+                    .setBlueScale(1.12f)
+                    .build()
+            )
+
+            "Mono" -> effects.add(
+                RgbFilter.createGrayscaleFilter()
+            )
+
+            "Vintage" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.08f)
+                    .setGreenScale(0.96f)
+                    .setBlueScale(0.82f)
+                    .build()
+            )
+        }
+
+        when (clip.effectName) {
+            "Flash" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.18f)
+                    .setGreenScale(1.18f)
+                    .setBlueScale(1.18f)
+                    .build()
+            )
+
+            "Dream" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.08f)
+                    .setGreenScale(1.03f)
+                    .setBlueScale(1.10f)
+                    .build()
+            )
+
+            "Retro" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.10f)
+                    .setGreenScale(0.90f)
+                    .setBlueScale(0.80f)
+                    .build()
+            )
+
+            "Cinema" -> effects.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.03f)
+                    .setGreenScale(0.98f)
+                    .setBlueScale(1.05f)
+                    .build()
+            )
+        }
+
+        val overlays = mutableListOf<TextureOverlay>()
+
+        textOverlays.forEach { overlay ->
+            val styled = SpannableString(overlay.text)
+
+            if (styled.isNotEmpty()) {
+                styled.setSpan(
+                    ForegroundColorSpan(overlay.color),
+                    0,
+                    styled.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+
+                styled.setSpan(
+                    AbsoluteSizeSpan(
+                        overlay.sizeSp.toInt().coerceAtLeast(12),
+                        true
+                    ),
+                    0,
+                    styled.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+
+                overlays.add(
+                    Media3TextOverlay.createStaticTextOverlay(styled)
+                )
+            }
+        }
+
+        clip.stickers.forEach { sticker ->
+            val styled = SpannableString(sticker)
+
+            styled.setSpan(
+                AbsoluteSizeSpan(44, true),
+                0,
+                styled.length,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+
+            overlays.add(
+                Media3TextOverlay.createStaticTextOverlay(styled)
+            )
+        }
+
+        if (overlays.isNotEmpty()) {
+            effects.add(OverlayEffect(overlays))
+        }
+
+        effects.add(
+            Presentation.createForHeight(exportHeight)
+        )
+
+        return effects
+    }
+
+    private fun publishExport(tempFile: File): Boolean {
+        if (!tempFile.exists() || tempFile.length() <= 0L) {
+            return false
+        }
+
+        val displayName =
+            "Cutrim_${System.currentTimeMillis()}.mp4"
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(
+                        MediaStore.Video.Media.DISPLAY_NAME,
+                        displayName
+                    )
+                    put(
+                        MediaStore.Video.Media.MIME_TYPE,
+                        "video/mp4"
+                    )
+                    put(
+                        MediaStore.Video.Media.RELATIVE_PATH,
+                        "${Environment.DIRECTORY_MOVIES}/Cutrim"
+                    )
+                    put(
+                        MediaStore.Video.Media.IS_PENDING,
+                        1
+                    )
+                }
+
+                val uri = contentResolver.insert(
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                    values
+                ) ?: return false
+
+                contentResolver
+                    .openOutputStream(uri, "w")
+                    ?.use { output ->
+                        tempFile.inputStream().use { input ->
+                            input.copyTo(output)
+                        }
+                    }
+                    ?: return false
+
+                val finishValues = ContentValues().apply {
+                    put(
+                        MediaStore.Video.Media.IS_PENDING,
+                        0
+                    )
+                }
+
+                contentResolver.update(
+                    uri,
+                    finishValues,
+                    null,
+                    null
+                )
+
+                tempFile.delete()
+                true
+            } else {
+                val base =
+                    getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+                        ?: return false
+
+                val directory = File(base, "Cutrim")
+                directory.mkdirs()
+
+                val destination =
+                    File(directory, displayName)
+
+                tempFile.copyTo(
+                    destination,
+                    overwrite = true
+                )
+
+                tempFile.delete()
+                destination.exists()
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private fun buildCreativeTools(): View {
         val wrap = LinearLayout(this).apply {
@@ -1537,7 +2190,7 @@ class MainActivity : Activity() {
         ))
 
         row.addView(TextView(this).apply {
-            text = "V6"
+            text = "V7"
             textSize = 12f
             setTextColor(primary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
@@ -1687,6 +2340,10 @@ class MainActivity : Activity() {
         creativeStatusText = null
         audioStatusText = null
         audioVolumeSeek = null
+        exportStatusText = null
+        exportProgressBar = null
+        exportResolutionButton = null
+        exportFpsButton = null
     }
 
     private fun updatePlayButton() {
@@ -2022,6 +2679,19 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        exportHandler.removeCallbacks(exportProgressUpdater)
+
+        try {
+            exporter?.cancel()
+        } catch (_: Exception) {
+        }
+
+        exporter = null
+        exportRunning = false
+
+        currentExportFile?.delete()
+        currentExportFile = null
+
         stopEditorUpdates()
         super.onDestroy()
     }
