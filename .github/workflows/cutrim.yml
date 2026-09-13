@@ -40,7 +40,7 @@ jobs:
           yes | "$SDKMANAGER" --licenses > /dev/null || true
 
           "$SDKMANAGER" \
-            "platforms;android-37" \
+            "platforms;android-37.0" \
             "build-tools;37.0.0"
 
       - name: Bootstrap Cutrim project
