@@ -2,16 +2,19 @@ package com.cutrim.app
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
+import android.Manifest
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -19,11 +22,13 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import android.app.AlertDialog
 import android.widget.VideoView
 
 class MainActivity : Activity() {
@@ -42,6 +47,21 @@ class MainActivity : Activity() {
         val selectedIndex: Int
     )
 
+    data class TextOverlay(
+        var text: String,
+        var sizeSp: Float = 26f,
+        var color: Int = Color.WHITE
+    )
+
+    data class AudioTrack(
+        val uri: Uri,
+        val name: String,
+        val type: String,
+        var volume: Float = 1f,
+        var fadeIn: Boolean = false,
+        var fadeOut: Boolean = false
+    )
+
     private val backgroundColor = Color.rgb(8, 12, 16)
     private val surface = Color.rgb(18, 24, 30)
     private val surfaceAlt = Color.rgb(24, 31, 38)
@@ -51,6 +71,9 @@ class MainActivity : Activity() {
 
     private val selectedVideos = mutableListOf<Uri>()
     private val editorClips = mutableListOf<ClipSegment>()
+
+    private val textOverlays = mutableListOf<TextOverlay>()
+    private val audioTracks = mutableListOf<AudioTrack>()
 
     private val undoStack = mutableListOf<EditorState>()
     private val redoStack = mutableListOf<EditorState>()
@@ -66,7 +89,13 @@ class MainActivity : Activity() {
     private var seekBar: SeekBar? = null
     private var timeText: TextView? = null
     private var editorClipTitle: TextView? = null
+    private var overlayLayer: FrameLayout? = null
+    private var audioStatusText: TextView? = null
+    private var audioVolumeSeek: SeekBar? = null
+    private var audioPlayer: MediaPlayer? = null
     private var selectedClipIndex = 0
+    private var selectedAudioIndex = -1
+    private var pendingAudioType = "Music"
     private var userSeeking = false
 
     private val progressHandler = Handler(Looper.getMainLooper())
@@ -276,6 +305,9 @@ class MainActivity : Activity() {
 
         undoStack.clear()
         redoStack.clear()
+        textOverlays.clear()
+        audioTracks.clear()
+        selectedAudioIndex = -1
         selectedClipIndex = 0
 
         showEditor()
@@ -352,6 +384,16 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+
+        overlayLayer = FrameLayout(this)
+        previewCard.addView(
+            overlayLayer,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        refreshTextOverlays()
 
         root.addView(
             previewCard,
@@ -486,8 +528,14 @@ class MainActivity : Activity() {
             }
         )
 
+        root.addView(sectionTitle("Text", 12))
+        root.addView(buildTextTools())
+
+        root.addView(sectionTitle("Audio", 12))
+        root.addView(buildAudioTools())
+
         root.addView(TextView(this).apply {
-            text = "Trim, split, delete and reorder are active in V4."
+            text = "Text and audio settings are stored in the project. Final render arrives in V7."
             textSize = 12f
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
@@ -767,6 +815,400 @@ class MainActivity : Activity() {
         return editorClips.getOrNull(selectedClipIndex)
     }
 
+
+    private fun buildTextTools(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+
+        row.addView(
+            actionButton("Add Text") { showTextDialog(null) },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row.addView(
+            actionButton("Edit Last") {
+                if (textOverlays.isEmpty()) {
+                    toast("No text overlay yet.")
+                } else {
+                    showTextDialog(textOverlays.lastIndex)
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row.addView(
+            actionButton("Delete Last") {
+                if (textOverlays.isEmpty()) {
+                    toast("No text overlay yet.")
+                } else {
+                    textOverlays.removeAt(textOverlays.lastIndex)
+                    refreshTextOverlays()
+                    toast("Text removed.")
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        return row
+    }
+
+    private fun showTextDialog(index: Int?) {
+        val existing = index?.let { textOverlays.getOrNull(it) }
+
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), 0)
+        }
+
+        val input = EditText(this).apply {
+            hint = "Enter text"
+            setText(existing?.text ?: "")
+            setSingleLine(false)
+        }
+
+        wrap.addView(input)
+
+        val sizeSeek = SeekBar(this).apply {
+            min = 14
+            max = 54
+            progress = existing?.sizeSp?.toInt() ?: 26
+        }
+
+        wrap.addView(TextView(this).apply {
+            text = "Text size"
+            setPadding(0, dp(12), 0, 0)
+        })
+        wrap.addView(sizeSeek)
+
+        var selectedColor = existing?.color ?: Color.WHITE
+
+        val colorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        val colors = listOf(
+            "White" to Color.WHITE,
+            "Teal" to primary,
+            "Yellow" to Color.YELLOW,
+            "Red" to Color.RED
+        )
+
+        colors.forEach { pair ->
+            colorRow.addView(Button(this).apply {
+                text = pair.first
+                isAllCaps = false
+                textSize = 11f
+                setOnClickListener {
+                    selectedColor = pair.second
+                    toast("${pair.first} selected.")
+                }
+            }, LinearLayout.LayoutParams(
+                0,
+                dp(46),
+                1f
+            ))
+        }
+
+        wrap.addView(colorRow)
+
+        AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Add Text" else "Edit Text")
+            .setView(wrap)
+            .setPositiveButton("Save") { _, _ ->
+                val value = input.text.toString().trim()
+
+                if (value.isEmpty()) {
+                    toast("Text cannot be empty.")
+                    return@setPositiveButton
+                }
+
+                if (existing == null) {
+                    textOverlays.add(
+                        TextOverlay(
+                            text = value,
+                            sizeSp = sizeSeek.progress.toFloat(),
+                            color = selectedColor
+                        )
+                    )
+                } else {
+                    existing.text = value
+                    existing.sizeSp = sizeSeek.progress.toFloat()
+                    existing.color = selectedColor
+                }
+
+                refreshTextOverlays()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun refreshTextOverlays() {
+        val layer = overlayLayer ?: return
+        layer.removeAllViews()
+
+        textOverlays.forEachIndexed { index, overlay ->
+            val view = TextView(this).apply {
+                text = overlay.text
+                textSize = overlay.sizeSp
+                setTextColor(overlay.color)
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                background = roundedBackground(
+                    Color.argb(90, 0, 0, 0),
+                    8
+                )
+            }
+
+            layer.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                ).apply {
+                    topMargin = index * dp(46)
+                }
+            )
+        }
+    }
+
+    private fun buildAudioTools(): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        row.addView(
+            actionButton("Music") {
+                pendingAudioType = "Music"
+                openAudioPicker()
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row.addView(
+            actionButton("Voice") {
+                pendingAudioType = "Voice"
+                openAudioPicker()
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        row.addView(
+            actionButton("Play Audio") {
+                toggleAudioPreview()
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(row)
+
+        audioStatusText = TextView(this).apply {
+            text = currentAudioLabel()
+            textSize = 12f
+            setTextColor(textSecondary)
+            setPadding(dp(4), dp(10), dp(4), dp(4))
+        }
+
+        wrap.addView(audioStatusText)
+
+        audioVolumeSeek = SeekBar(this).apply {
+            min = 0
+            max = 100
+            progress = currentAudio()?.let { (it.volume * 100).toInt() } ?: 100
+
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+
+                override fun onProgressChanged(
+                    seekBar: SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    if (fromUser) {
+                        currentAudio()?.volume = progress / 100f
+                        audioPlayer?.setVolume(
+                            progress / 100f,
+                            progress / 100f
+                        )
+                        refreshAudioStatus()
+                    }
+                }
+            })
+        }
+
+        wrap.addView(TextView(this).apply {
+            text = "Volume"
+            textSize = 12f
+            setTextColor(textSecondary)
+            setPadding(dp(4), dp(6), dp(4), 0)
+        })
+        wrap.addView(audioVolumeSeek)
+
+        val fadeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        fadeRow.addView(
+            actionButton("Fade In") {
+                val track = currentAudio()
+                if (track == null) {
+                    toast("Import audio first.")
+                } else {
+                    track.fadeIn = !track.fadeIn
+                    refreshAudioStatus()
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        fadeRow.addView(
+            actionButton("Fade Out") {
+                val track = currentAudio()
+                if (track == null) {
+                    toast("Import audio first.")
+                } else {
+                    track.fadeOut = !track.fadeOut
+                    refreshAudioStatus()
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginStart = dp(4)
+                marginEnd = dp(4)
+            }
+        )
+
+        fadeRow.addView(
+            actionButton("Remove") {
+                if (selectedAudioIndex in audioTracks.indices) {
+                    stopAudioPreview()
+                    audioTracks.removeAt(selectedAudioIndex)
+                    selectedAudioIndex =
+                        if (audioTracks.isEmpty()) -1 else audioTracks.lastIndex
+                    refreshAudioStatus()
+                    toast("Audio removed.")
+                } else {
+                    toast("No audio selected.")
+                }
+            },
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
+        wrap.addView(fadeRow)
+
+        return wrap
+    }
+
+    private fun openAudioPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+        }
+
+        startActivityForResult(intent, REQUEST_AUDIO)
+    }
+
+    private fun currentAudio(): AudioTrack? {
+        return audioTracks.getOrNull(selectedAudioIndex)
+    }
+
+    private fun currentAudioLabel(): String {
+        val track = currentAudio() ?: return "No audio track selected"
+
+        val fadeParts = mutableListOf<String>()
+        if (track.fadeIn) fadeParts.add("Fade In")
+        if (track.fadeOut) fadeParts.add("Fade Out")
+        val fade = fadeParts.joinToString(" + ")
+
+        return buildString {
+            append("${track.type}: ${track.name}")
+            append("  •  ${(track.volume * 100).toInt()}%")
+            if (fade.isNotEmpty()) {
+                append("  •  $fade")
+            }
+        }
+    }
+
+    private fun refreshAudioStatus() {
+        audioStatusText?.text = currentAudioLabel()
+        audioVolumeSeek?.progress =
+            currentAudio()?.let { (it.volume * 100).toInt() } ?: 100
+    }
+
+    private fun toggleAudioPreview() {
+        val track = currentAudio()
+
+        if (track == null) {
+            toast("Import music or voice audio first.")
+            return
+        }
+
+        if (audioPlayer?.isPlaying == true) {
+            audioPlayer?.pause()
+            return
+        }
+
+        if (audioPlayer == null) {
+            try {
+                audioPlayer = MediaPlayer().apply {
+                    setDataSource(this@MainActivity, track.uri)
+                    prepare()
+                    setVolume(track.volume, track.volume)
+                }
+            } catch (_: Exception) {
+                stopAudioPreview()
+                toast("Unable to play this audio.")
+                return
+            }
+        }
+
+        audioPlayer?.start()
+    }
+
+    private fun stopAudioPreview() {
+        try {
+            audioPlayer?.stop()
+        } catch (_: Exception) {
+        }
+
+        try {
+            audioPlayer?.release()
+        } catch (_: Exception) {
+        }
+
+        audioPlayer = null
+    }
+
     private fun buildEditorHeader(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -800,7 +1242,7 @@ class MainActivity : Activity() {
         ))
 
         row.addView(TextView(this).apply {
-            text = "V4"
+            text = "V5"
             textSize = 12f
             setTextColor(primary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
@@ -930,6 +1372,7 @@ class MainActivity : Activity() {
 
     private fun stopEditorUpdates() {
         progressHandler.removeCallbacks(progressUpdater)
+        stopAudioPreview()
 
         try {
             videoView?.pause()
@@ -941,6 +1384,9 @@ class MainActivity : Activity() {
         seekBar = null
         timeText = null
         editorClipTitle = null
+        overlayLayer = null
+        audioStatusText = null
+        audioVolumeSeek = null
     }
 
     private fun updatePlayButton() {
@@ -1183,6 +1629,36 @@ class MainActivity : Activity() {
         data: Intent?
     ) {
         super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == REQUEST_AUDIO) {
+            if (resultCode != RESULT_OK || data?.data == null) {
+                return
+            }
+
+            val uri = data.data ?: return
+
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+
+            audioTracks.add(
+                AudioTrack(
+                    uri = uri,
+                    name = getDisplayName(uri),
+                    type = pendingAudioType
+                )
+            )
+
+            selectedAudioIndex = audioTracks.lastIndex
+            stopAudioPreview()
+            refreshAudioStatus()
+            toast("$pendingAudioType added.")
+            return
+        }
 
         if (
             requestCode != REQUEST_VIDEO ||
@@ -1629,6 +2105,7 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQUEST_VIDEO = 1001
+        private const val REQUEST_AUDIO = 1002
 
         private const val SCREEN_HOME = 0
         private const val SCREEN_MEDIA = 1
