@@ -6,11 +6,16 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -25,11 +30,21 @@ class MainActivity : Activity() {
     private val textPrimary = Color.rgb(244, 247, 249)
     private val textSecondary = Color.rgb(151, 162, 171)
 
+    private val selectedVideos = mutableListOf<Uri>()
+    private var selectedListContainer: LinearLayout? = null
+    private var selectedCountText: TextView? = null
+    private var createProjectButton: Button? = null
+    private var onMediaScreen = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         window.statusBarColor = backgroundColor
         window.navigationBarColor = backgroundColor
+        showHome()
+    }
+
+    private fun showHome() {
+        onMediaScreen = false
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
@@ -57,6 +72,426 @@ class MainActivity : Activity() {
         )
 
         setContentView(scroll)
+    }
+
+    private fun showMediaImport() {
+        onMediaScreen = true
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(backgroundColor)
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(22), dp(20), dp(30))
+        }
+
+        root.addView(buildMediaHeader())
+
+        root.addView(TextView(this).apply {
+            text = "Choose your clips"
+            textSize = 29f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(26)
+            }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "Import one or more videos from your device."
+            textSize = 14f
+            setTextColor(textSecondary)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(7)
+            }
+        })
+
+        root.addView(Button(this).apply {
+            text = "＋  Import Videos"
+            textSize = 16f
+            isAllCaps = false
+            setTextColor(Color.rgb(4, 24, 21))
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            backgroundTintList = ColorStateList.valueOf(primary)
+
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(56)
+            ).apply {
+                topMargin = dp(24)
+            }
+
+            setOnClickListener {
+                openVideoPicker()
+            }
+        })
+
+        root.addView(buildSelectedHeader())
+
+        selectedListContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        root.addView(
+            selectedListContainer,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(12)
+            }
+        )
+
+        createProjectButton = Button(this).apply {
+            text = "Create Project"
+            textSize = 16f
+            isAllCaps = false
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            isEnabled = selectedVideos.isNotEmpty()
+
+            updateCreateButtonStyle(this)
+
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(56)
+            ).apply {
+                topMargin = dp(24)
+            }
+
+            setOnClickListener {
+                if (selectedVideos.isEmpty()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Select at least one video.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "${selectedVideos.size} video(s) ready. Editor arrives in V3.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+        root.addView(createProjectButton)
+
+        scroll.addView(
+            root,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        setContentView(scroll)
+        refreshSelectedVideos()
+    }
+
+    private fun buildMediaHeader(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        row.addView(TextView(this).apply {
+            text = "‹"
+            textSize = 38f
+            gravity = Gravity.CENTER
+            setTextColor(textPrimary)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Back"
+            setOnClickListener { showHome() }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+        row.addView(TextView(this).apply {
+            text = "Import Media"
+            textSize = 20f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+        }, LinearLayout.LayoutParams(
+            0,
+            dp(44),
+            1f
+        ))
+
+        row.addView(TextView(this).apply {
+            text = "CUTRIM"
+            textSize = 12f
+            setTextColor(primary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        }, LinearLayout.LayoutParams(
+            dp(80),
+            dp(44)
+        ))
+
+        return row
+    }
+
+    private fun buildSelectedHeader(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(30)
+            }
+        }
+
+        row.addView(TextView(this).apply {
+            text = "Selected Media"
+            textSize = 19f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(
+            0,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            1f
+        ))
+
+        selectedCountText = TextView(this).apply {
+            textSize = 13f
+            setTextColor(primary)
+            gravity = Gravity.END
+        }
+
+        row.addView(selectedCountText)
+
+        return row
+    }
+
+    private fun refreshSelectedVideos() {
+        selectedCountText?.text = "${selectedVideos.size} selected"
+        selectedListContainer?.removeAllViews()
+
+        if (selectedVideos.isEmpty()) {
+            selectedListContainer?.addView(TextView(this).apply {
+                text = "No videos selected yet."
+                textSize = 14f
+                gravity = Gravity.CENTER
+                setTextColor(textSecondary)
+                setPadding(dp(12), dp(30), dp(12), dp(30))
+                background = roundedBackground(surface, 18)
+            })
+        } else {
+            selectedVideos.forEachIndexed { index, uri ->
+                selectedListContainer?.addView(
+                    buildSelectedVideoCard(uri, index),
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(92)
+                    ).apply {
+                        bottomMargin = dp(10)
+                    }
+                )
+            }
+        }
+
+        createProjectButton?.isEnabled = selectedVideos.isNotEmpty()
+        createProjectButton?.let { updateCreateButtonStyle(it) }
+    }
+
+    private fun buildSelectedVideoCard(uri: Uri, index: Int): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = roundedBackground(surfaceAlt, 16)
+        }
+
+        val thumbnail = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.rgb(34, 42, 50))
+            contentDescription = "Video thumbnail"
+        }
+
+        val bitmap = getVideoThumbnail(uri)
+        if (bitmap != null) {
+            thumbnail.setImageBitmap(bitmap)
+        } else {
+            thumbnail.setImageResource(android.R.drawable.ic_media_play)
+            thumbnail.setPadding(dp(22), dp(22), dp(22), dp(22))
+        }
+
+        row.addView(
+            thumbnail,
+            LinearLayout.LayoutParams(dp(72), dp(72))
+        )
+
+        val textWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, dp(8), 0)
+        }
+
+        textWrap.addView(TextView(this).apply {
+            text = getDisplayName(uri)
+            textSize = 14f
+            maxLines = 1
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        })
+
+        textWrap.addView(TextView(this).apply {
+            text = "Video ready"
+            textSize = 12f
+            setTextColor(textSecondary)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        })
+
+        row.addView(
+            textWrap,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                1f
+            )
+        )
+
+        row.addView(TextView(this).apply {
+            text = "×"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            setTextColor(textSecondary)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Remove video"
+            setOnClickListener {
+                if (index in selectedVideos.indices) {
+                    selectedVideos.removeAt(index)
+                    refreshSelectedVideos()
+                }
+            }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+        return row
+    }
+
+    private fun openVideoPicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "video/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+
+        startActivityForResult(intent, REQUEST_VIDEO)
+    }
+
+    @Deprecated("Used for V2 without extra dependencies")
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode != REQUEST_VIDEO || resultCode != RESULT_OK || data == null) {
+            return
+        }
+
+        val incoming = mutableListOf<Uri>()
+
+        val clips = data.clipData
+        if (clips != null) {
+            for (i in 0 until clips.itemCount) {
+                incoming.add(clips.getItemAt(i).uri)
+            }
+        } else {
+            data.data?.let { incoming.add(it) }
+        }
+
+        incoming.forEach { uri ->
+            try {
+                contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+
+            if (!selectedVideos.contains(uri)) {
+                selectedVideos.add(uri)
+            }
+        }
+
+        if (!onMediaScreen) {
+            showMediaImport()
+        } else {
+            refreshSelectedVideos()
+        }
+    }
+
+    @Deprecated("Handled for current Activity UI")
+    override fun onBackPressed() {
+        if (onMediaScreen) {
+            showHome()
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    private fun getDisplayName(uri: Uri): String {
+        try {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) {
+                    return cursor.getString(index) ?: "Video"
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        return "Video"
+    }
+
+    private fun getVideoThumbnail(uri: Uri) = try {
+        val retriever = MediaMetadataRetriever()
+        retriever.setDataSource(this, uri)
+        val bitmap = retriever.getFrameAtTime(
+            0,
+            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+        )
+        retriever.release()
+        bitmap
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun updateCreateButtonStyle(button: Button) {
+        if (button.isEnabled) {
+            button.setTextColor(Color.rgb(4, 24, 21))
+            button.backgroundTintList = ColorStateList.valueOf(primary)
+        } else {
+            button.setTextColor(Color.rgb(125, 135, 141))
+            button.backgroundTintList = ColorStateList.valueOf(
+                Color.rgb(35, 42, 48)
+            )
+        }
     }
 
     private fun buildHeader(): View {
@@ -151,7 +586,7 @@ class MainActivity : Activity() {
             }
 
             setOnClickListener {
-                openVideoPicker()
+                showMediaImport()
             }
         })
 
@@ -187,7 +622,7 @@ class MainActivity : Activity() {
                 title = "New Project",
                 subtitle = "Choose a video"
             ) {
-                openVideoPicker()
+                showMediaImport()
             },
             LinearLayout.LayoutParams(0, dp(132), 1f).apply {
                 marginStart = dp(7)
@@ -300,34 +735,6 @@ class MainActivity : Activity() {
             ).apply {
                 this.topMargin = dp(topMargin)
                 bottomMargin = dp(12)
-            }
-        }
-    }
-
-    private fun openVideoPicker() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "video/*"
-        }
-
-        startActivityForResult(intent, REQUEST_VIDEO)
-    }
-
-    @Deprecated("Used for V1 compatibility without extra dependencies")
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == REQUEST_VIDEO && resultCode == RESULT_OK) {
-            if (data?.data != null) {
-                Toast.makeText(
-                    this,
-                    "Video selected. Media Import screen arrives in V2.",
-                    Toast.LENGTH_LONG
-                ).show()
             }
         }
     }
