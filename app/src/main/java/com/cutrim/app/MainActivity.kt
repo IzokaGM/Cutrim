@@ -501,7 +501,7 @@ class MainActivity : Activity() {
 
         scroll.addView(
             row,
-            HorizontalScrollView.LayoutParams(
+            FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
