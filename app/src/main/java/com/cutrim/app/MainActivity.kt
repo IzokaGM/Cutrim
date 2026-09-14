@@ -10,6 +10,12 @@ import android.text.Spanned
 import android.text.style.AbsoluteSizeSpan
 import android.text.style.ForegroundColorSpan
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
@@ -67,6 +73,7 @@ import android.widget.VideoView
 class MainActivity : Activity() {
 
     data class ClipSegment(
+        val id: String = UUID.randomUUID().toString(),
         val uri: Uri,
         var startMs: Int,
         var endMs: Int,
@@ -82,11 +89,15 @@ class MainActivity : Activity() {
 
     data class EditorState(
         val clips: List<ClipSegment>,
-        val selectedIndex: Int
+        val textOverlays: List<TextOverlay>,
+        val audioTracks: List<AudioTrack>,
+        val selectedClipIndex: Int,
+        val selectedAudioIndex: Int
     )
 
     data class TextOverlay(
         var text: String,
+        val clipId: String,
         var sizeSp: Float = 26f,
         var color: Int = Color.WHITE
     )
@@ -98,6 +109,14 @@ class MainActivity : Activity() {
         var volume: Float = 1f,
         var fadeIn: Boolean = false,
         var fadeOut: Boolean = false
+    )
+
+    data class ProjectSummary(
+        val id: String,
+        val name: String,
+        val updatedAt: Long,
+        val clipCount: Int,
+        val durationMs: Int
     )
 
     private val backgroundColor = Color.rgb(8, 12, 16)
@@ -112,6 +131,10 @@ class MainActivity : Activity() {
 
     private val textOverlays = mutableListOf<TextOverlay>()
     private val audioTracks = mutableListOf<AudioTrack>()
+
+    private var currentProjectId: String? = null
+    private var currentProjectName: String = "Untitled Project"
+    private var currentProjectUpdatedAt: Long = 0L
 
     private val undoStack = mutableListOf<EditorState>()
     private val redoStack = mutableListOf<EditorState>()
@@ -136,6 +159,7 @@ class MainActivity : Activity() {
     private var selectedClipIndex = 0
     private var selectedAudioIndex = -1
     private var pendingAudioType = "Music"
+    private var videoPickerMode = VIDEO_PICK_CREATE
     private var userSeeking = false
 
     private var exportHeight = 720
@@ -217,6 +241,9 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
+        if (currentProjectId != null && editorClips.isNotEmpty()) {
+            persistCurrentProject()
+        }
         stopEditorUpdates()
         screen = SCREEN_HOME
 
@@ -246,6 +273,26 @@ class MainActivity : Activity() {
         )
 
         setContentView(scroll)
+    }
+
+    private fun startNewProject() {
+        if (currentProjectId != null && editorClips.isNotEmpty()) {
+            persistCurrentProject()
+        }
+
+        currentProjectId = null
+        currentProjectName = "Untitled Project"
+        currentProjectUpdatedAt = 0L
+        selectedVideos.clear()
+        editorClips.clear()
+        textOverlays.clear()
+        audioTracks.clear()
+        selectedClipIndex = 0
+        selectedAudioIndex = -1
+        undoStack.clear()
+        redoStack.clear()
+
+        showMediaImport()
     }
 
     private fun showMediaImport() {
@@ -306,7 +353,7 @@ class MainActivity : Activity() {
                 topMargin = dp(24)
             }
 
-            setOnClickListener { openVideoPicker() }
+            setOnClickListener { openVideoPicker(VIDEO_PICK_CREATE) }
         })
 
         root.addView(buildSelectedHeader())
@@ -386,6 +433,12 @@ class MainActivity : Activity() {
         audioTracks.clear()
         selectedAudioIndex = -1
         selectedClipIndex = 0
+
+        val now = System.currentTimeMillis()
+        currentProjectId = "project_$now"
+        currentProjectName = "Project ${formatProjectDate(now)}"
+        currentProjectUpdatedAt = now
+        persistCurrentProject()
 
         showEditor()
     }
@@ -640,7 +693,7 @@ class MainActivity : Activity() {
         root.addView(buildAudioTools())
 
         root.addView(TextView(this).apply {
-            text = "V7 exports the edited timeline as a real MP4 file."
+            text = "V8 autosaves projects and exports the edited timeline as MP4."
             textSize = 12f
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
@@ -751,8 +804,36 @@ class MainActivity : Activity() {
             }
         )
 
+        val row3 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+            }
+        }
+
+        row3.addView(
+            actionButton("＋ Add Media") {
+                openVideoPicker(VIDEO_PICK_APPEND)
+            },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginEnd = dp(4)
+            }
+        )
+
+        row3.addView(
+            actionButton("Duplicate") { duplicateClip() },
+            LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+
         wrap.addView(row1)
         wrap.addView(row2)
+        wrap.addView(row3)
 
         return wrap
     }
@@ -828,7 +909,10 @@ class MainActivity : Activity() {
         pushUndo()
 
         val left = clip.copy(endMs = position)
-        val right = clip.copy(startMs = position)
+        val right = clip.copy(
+            id = UUID.randomUUID().toString(),
+            startMs = position
+        )
 
         editorClips[selectedClipIndex] = left
         editorClips.add(selectedClipIndex + 1, right)
@@ -841,19 +925,36 @@ class MainActivity : Activity() {
     private fun deleteClip() {
         if (editorClips.isEmpty()) return
 
-        pushUndo()
-        editorClips.removeAt(selectedClipIndex)
-
-        if (editorClips.isEmpty()) {
-            toast("Timeline is empty.")
-            showMediaImport()
+        if (editorClips.size == 1) {
+            toast("A project needs at least one clip.")
             return
         }
+
+        pushUndo()
+        val removedClipId = editorClips[selectedClipIndex].id
+        editorClips.removeAt(selectedClipIndex)
+        textOverlays.removeAll { it.clipId == removedClipId }
 
         selectedClipIndex =
             selectedClipIndex.coerceAtMost(editorClips.lastIndex)
 
         showEditor()
+    }
+
+    private fun duplicateClip() {
+        val clip = currentClip() ?: return
+        pushUndo()
+
+        editorClips.add(
+            selectedClipIndex + 1,
+            clip.copy(
+                id = UUID.randomUUID().toString(),
+                stickers = clip.stickers.toList()
+            )
+        )
+        selectedClipIndex += 1
+        showEditor()
+        toast("Clip duplicated.")
     }
 
     private fun moveClip(direction: Int) {
@@ -908,20 +1009,40 @@ class MainActivity : Activity() {
     private fun snapshotState(): EditorState {
         return EditorState(
             clips = editorClips.map { it.copy(stickers = it.stickers.toList()) },
-            selectedIndex = selectedClipIndex
+            textOverlays = textOverlays.map { it.copy() },
+            audioTracks = audioTracks.map { it.copy() },
+            selectedClipIndex = selectedClipIndex,
+            selectedAudioIndex = selectedAudioIndex
         )
     }
 
     private fun restoreState(state: EditorState) {
         editorClips.clear()
-        editorClips.addAll(state.clips.map { it.copy(stickers = it.stickers.toList()) })
+        editorClips.addAll(
+            state.clips.map { it.copy(stickers = it.stickers.toList()) }
+        )
+
+        textOverlays.clear()
+        textOverlays.addAll(state.textOverlays.map { it.copy() })
+
+        audioTracks.clear()
+        audioTracks.addAll(state.audioTracks.map { it.copy() })
 
         selectedClipIndex =
             if (editorClips.isEmpty()) {
                 0
             } else {
-                state.selectedIndex.coerceIn(0, editorClips.lastIndex)
+                state.selectedClipIndex.coerceIn(0, editorClips.lastIndex)
             }
+
+        selectedAudioIndex =
+            if (audioTracks.isEmpty()) {
+                -1
+            } else {
+                state.selectedAudioIndex.coerceIn(0, audioTracks.lastIndex)
+            }
+
+        persistCurrentProject()
     }
 
     private fun currentClip(): ClipSegment? {
@@ -952,6 +1073,7 @@ class MainActivity : Activity() {
 
             exportHeight = if (exportHeight == 720) 1080 else 720
             exportResolutionButton?.text = "Resolution: ${exportHeight}p"
+            persistCurrentProject()
         }
 
         settingsRow.addView(
@@ -971,6 +1093,7 @@ class MainActivity : Activity() {
 
             exportFps = if (exportFps == 30) 60 else 30
             exportFpsButton?.text = "FPS: $exportFps"
+            persistCurrentProject()
         }
 
         settingsRow.addView(
@@ -1361,7 +1484,9 @@ class MainActivity : Activity() {
 
         val overlays = mutableListOf<TextureOverlay>()
 
-        textOverlays.forEach { overlay ->
+        textOverlays
+            .filter { it.clipId == clip.id }
+            .forEach { overlay ->
             val styled = SpannableString(overlay.text)
 
             if (styled.isNotEmpty()) {
@@ -1606,6 +1731,9 @@ class MainActivity : Activity() {
         clip.transitionName = options[(current + 1) % options.size]
 
         refreshCreativeStatus()
+        if (clip.transitionName != "None") {
+            toast("Transition renderer is not wired to export yet.")
+        }
     }
 
     private fun cycleEffect() {
@@ -1682,6 +1810,7 @@ class MainActivity : Activity() {
 
     private fun refreshCreativeStatus() {
         creativeStatusText?.text = currentCreativeLabel()
+        persistCurrentProject()
     }
 
     private fun refreshCreativePreview() {
@@ -1779,10 +1908,11 @@ class MainActivity : Activity() {
 
         row.addView(
             actionButton("Edit Last") {
-                if (textOverlays.isEmpty()) {
-                    toast("No text overlay yet.")
+                val index = currentClipTextIndices().lastOrNull()
+                if (index == null) {
+                    toast("No text on this clip yet.")
                 } else {
-                    showTextDialog(textOverlays.lastIndex)
+                    showTextDialog(index)
                 }
             },
             LinearLayout.LayoutParams(0, dp(48), 1f).apply {
@@ -1793,11 +1923,14 @@ class MainActivity : Activity() {
 
         row.addView(
             actionButton("Delete Last") {
-                if (textOverlays.isEmpty()) {
-                    toast("No text overlay yet.")
+                val index = currentClipTextIndices().lastOrNull()
+                if (index == null) {
+                    toast("No text on this clip yet.")
                 } else {
-                    textOverlays.removeAt(textOverlays.lastIndex)
+                    pushUndo()
+                    textOverlays.removeAt(index)
                     refreshTextOverlays()
+                    persistCurrentProject()
                     toast("Text removed.")
                 }
             },
@@ -1807,6 +1940,11 @@ class MainActivity : Activity() {
         )
 
         return row
+    }
+
+    private fun currentClipTextIndices(): List<Int> {
+        val clipId = currentClip()?.id ?: return emptyList()
+        return textOverlays.indices.filter { textOverlays[it].clipId == clipId }
     }
 
     private fun showTextDialog(index: Int?) {
@@ -1880,10 +2018,13 @@ class MainActivity : Activity() {
                     return@setPositiveButton
                 }
 
+                pushUndo()
+
                 if (existing == null) {
                     textOverlays.add(
                         TextOverlay(
                             text = value,
+                            clipId = currentClip()?.id ?: return@setPositiveButton,
                             sizeSp = sizeSeek.progress.toFloat(),
                             color = selectedColor
                         )
@@ -1895,6 +2036,7 @@ class MainActivity : Activity() {
                 }
 
                 refreshTextOverlays()
+                persistCurrentProject()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1904,7 +2046,10 @@ class MainActivity : Activity() {
         val layer = overlayLayer ?: return
         layer.removeAllViews()
 
-        textOverlays.forEachIndexed { index, overlay ->
+        val clipId = currentClip()?.id ?: return
+        textOverlays
+            .filter { it.clipId == clipId }
+            .forEachIndexed { index, overlay ->
             val view = TextView(this).apply {
                 text = overlay.text
                 textSize = overlay.sizeSp
@@ -1991,8 +2136,13 @@ class MainActivity : Activity() {
             progress = currentAudio()?.let { (it.volume * 100).toInt() } ?: 100
 
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                    if (currentAudio() != null) pushUndo()
+                }
+
+                override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                    persistCurrentProject()
+                }
 
                 override fun onProgressChanged(
                     seekBar: SeekBar?,
@@ -2029,8 +2179,10 @@ class MainActivity : Activity() {
                 if (track == null) {
                     toast("Import audio first.")
                 } else {
+                    pushUndo()
                     track.fadeIn = !track.fadeIn
                     refreshAudioStatus()
+                    persistCurrentProject()
                 }
             },
             LinearLayout.LayoutParams(0, dp(46), 1f).apply {
@@ -2044,8 +2196,10 @@ class MainActivity : Activity() {
                 if (track == null) {
                     toast("Import audio first.")
                 } else {
+                    pushUndo()
                     track.fadeOut = !track.fadeOut
                     refreshAudioStatus()
+                    persistCurrentProject()
                 }
             },
             LinearLayout.LayoutParams(0, dp(46), 1f).apply {
@@ -2057,11 +2211,13 @@ class MainActivity : Activity() {
         fadeRow.addView(
             actionButton("Remove") {
                 if (selectedAudioIndex in audioTracks.indices) {
+                    pushUndo()
                     stopAudioPreview()
                     audioTracks.removeAt(selectedAudioIndex)
                     selectedAudioIndex =
                         if (audioTracks.isEmpty()) -1 else audioTracks.lastIndex
                     refreshAudioStatus()
+                    persistCurrentProject()
                     toast("Audio removed.")
                 } else {
                     toast("No audio selected.")
@@ -2170,18 +2326,23 @@ class MainActivity : Activity() {
             setTextColor(textPrimary)
             isClickable = true
             isFocusable = true
-            contentDescription = "Back"
+            contentDescription = "Back to projects"
 
-            setOnClickListener { showMediaImport() }
+            setOnClickListener { showHome() }
 
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
 
         row.addView(TextView(this).apply {
-            text = "Cutrim Editor"
-            textSize = 20f
+            text = currentProjectName
+            textSize = 18f
+            maxLines = 1
             setTextColor(textPrimary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
             gravity = Gravity.CENTER_VERTICAL
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Rename project"
+            setOnClickListener { showRenameProjectDialog() }
 
         }, LinearLayout.LayoutParams(
             0,
@@ -2189,16 +2350,47 @@ class MainActivity : Activity() {
             1f
         ))
 
-        row.addView(TextView(this).apply {
-            text = "V7"
+        row.addView(Button(this).apply {
+            text = "Save"
             textSize = 12f
-            setTextColor(primary)
+            isAllCaps = false
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            gravity = Gravity.CENTER
-
-        }, LinearLayout.LayoutParams(dp(52), dp(44)))
+            setTextColor(Color.rgb(4, 24, 21))
+            backgroundTintList = ColorStateList.valueOf(primary)
+            setOnClickListener {
+                if (persistCurrentProject()) {
+                    toast("Project saved.")
+                } else {
+                    toast("Unable to save project.")
+                }
+            }
+        }, LinearLayout.LayoutParams(dp(72), dp(44)))
 
         return row
+    }
+
+    private fun showRenameProjectDialog() {
+        val input = EditText(this).apply {
+            setText(currentProjectName)
+            setSelection(text.length)
+            hint = "Project name"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Rename project")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) {
+                    toast("Project name cannot be empty.")
+                } else {
+                    currentProjectName = name.take(60)
+                    persistCurrentProject()
+                    showEditor()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun buildTimeline(): View {
@@ -2212,9 +2404,14 @@ class MainActivity : Activity() {
         }
 
         editorClips.forEachIndexed { index, clip ->
+            val timelineSeconds =
+                (clip.lengthMs() / clip.speed.coerceAtLeast(0.1f)) / 1000f
+            val clipWidth =
+                (timelineSeconds * 42f).toInt().coerceIn(dp(96), dp(280))
+
             row.addView(
                 buildTimelineClip(clip, index),
-                LinearLayout.LayoutParams(dp(128), dp(94)).apply {
+                LinearLayout.LayoutParams(clipWidth, dp(94)).apply {
                     marginEnd = dp(10)
                 }
             )
@@ -2279,7 +2476,9 @@ class MainActivity : Activity() {
         )
 
         card.addView(TextView(this).apply {
-            text = "${index + 1}  ${formatTime(clip.lengthMs())}"
+            val effectiveMs =
+                (clip.lengthMs() / clip.speed.coerceAtLeast(0.1f)).toInt()
+            text = "${index + 1}  ${formatTime(effectiveMs)}"
             textSize = 10f
             maxLines = 1
             gravity = Gravity.CENTER
@@ -2314,6 +2513,7 @@ class MainActivity : Activity() {
 
         updateTime(0, clip.lengthMs())
         updatePlayButton()
+        persistCurrentProject()
     }
 
     private fun startEditorUpdates() {
@@ -2569,7 +2769,9 @@ class MainActivity : Activity() {
         return row
     }
 
-    private fun openVideoPicker() {
+    private fun openVideoPicker(mode: Int = VIDEO_PICK_CREATE) {
+        videoPickerMode = mode
+
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "video/*"
@@ -2602,6 +2804,7 @@ class MainActivity : Activity() {
             } catch (_: Exception) {
             }
 
+            pushUndo()
             audioTracks.add(
                 AudioTrack(
                     uri = uri,
@@ -2613,6 +2816,7 @@ class MainActivity : Activity() {
             selectedAudioIndex = audioTracks.lastIndex
             stopAudioPreview()
             refreshAudioStatus()
+            persistCurrentProject()
             toast("$pendingAudioType added.")
             return
         }
@@ -2644,12 +2848,45 @@ class MainActivity : Activity() {
                 )
             } catch (_: Exception) {
             }
+        }
 
+        if (videoPickerMode == VIDEO_PICK_APPEND && currentProjectId != null) {
+            if (incoming.isEmpty()) return
+
+            pushUndo()
+            val firstNewIndex = editorClips.size
+
+            incoming.forEach { uri ->
+                val duration = getVideoDuration(uri).coerceAtLeast(MIN_CLIP_MS * 2)
+                editorClips.add(
+                    ClipSegment(
+                        uri = uri,
+                        startMs = 0,
+                        endMs = duration,
+                        name = getDisplayName(uri)
+                    )
+                )
+
+                if (!selectedVideos.contains(uri)) {
+                    selectedVideos.add(uri)
+                }
+            }
+
+            selectedClipIndex = firstNewIndex.coerceAtMost(editorClips.lastIndex)
+            videoPickerMode = VIDEO_PICK_CREATE
+            persistCurrentProject()
+            showEditor()
+            toast("${incoming.size} clip${if (incoming.size == 1) "" else "s"} added.")
+            return
+        }
+
+        incoming.forEach { uri ->
             if (!selectedVideos.contains(uri)) {
                 selectedVideos.add(uri)
             }
         }
 
+        videoPickerMode = VIDEO_PICK_CREATE
         if (screen != SCREEN_MEDIA) {
             showMediaImport()
         } else {
@@ -2660,7 +2897,7 @@ class MainActivity : Activity() {
     @Deprecated("Handled for current Activity UI")
     override fun onBackPressed() {
         when (screen) {
-            SCREEN_EDITOR -> showMediaImport()
+            SCREEN_EDITOR -> showHome()
             SCREEN_MEDIA -> showHome()
             else -> super.onBackPressed()
         }
@@ -2668,6 +2905,10 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+
+        if (currentProjectId != null && editorClips.isNotEmpty()) {
+            persistCurrentProject()
+        }
 
         if (screen == SCREEN_EDITOR) {
             try {
@@ -2866,7 +3107,7 @@ class MainActivity : Activity() {
                 topMargin = dp(24)
             }
 
-            setOnClickListener { showMediaImport() }
+            setOnClickListener { startNewProject() }
         })
 
         return card
@@ -2897,7 +3138,7 @@ class MainActivity : Activity() {
                 title = "New Project",
                 subtitle = "Choose a video"
             ) {
-                showMediaImport()
+                startNewProject()
             },
             LinearLayout.LayoutParams(0, dp(132), 1f).apply {
                 marginStart = dp(7)
@@ -2958,48 +3199,401 @@ class MainActivity : Activity() {
     }
 
     private fun buildRecentProjects(): View {
+        val projects = listSavedProjects()
+
+        if (projects.isEmpty()) {
+            return LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(20), dp(30), dp(20), dp(30))
+                background = roundedBackground(surface, 20)
+
+                addView(TextView(this@MainActivity).apply {
+                    text = "▶"
+                    textSize = 27f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.rgb(95, 109, 119))
+                })
+
+                addView(TextView(this@MainActivity).apply {
+                    text = "No projects yet"
+                    textSize = 17f
+                    gravity = Gravity.CENTER
+                    setTextColor(textPrimary)
+                    setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dp(10)
+                    }
+                })
+
+                addView(TextView(this@MainActivity).apply {
+                    text = "Projects are autosaved while you edit."
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    setTextColor(textSecondary)
+
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dp(5)
+                    }
+                })
+            }
+        }
+
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(dp(20), dp(30), dp(20), dp(30))
-            background = roundedBackground(surface, 20)
 
-            addView(TextView(this@MainActivity).apply {
-                text = "▶"
-                textSize = 27f
-                gravity = Gravity.CENTER
-                setTextColor(Color.rgb(95, 109, 119))
-            })
-
-            addView(TextView(this@MainActivity).apply {
-                text = "No projects yet"
-                textSize = 17f
-                gravity = Gravity.CENTER
-                setTextColor(textPrimary)
-                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    topMargin = dp(10)
-                }
-            })
-
-            addView(TextView(this@MainActivity).apply {
-                text = "Your saved projects will appear here."
-                textSize = 13f
-                gravity = Gravity.CENTER
-                setTextColor(textSecondary)
-
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    topMargin = dp(5)
-                }
-            })
+            projects.forEachIndexed { index, project ->
+                addView(
+                    buildProjectCard(project),
+                    LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        if (index < projects.lastIndex) bottomMargin = dp(10)
+                    }
+                )
+            }
         }
+    }
+
+    private fun buildProjectCard(project: ProjectSummary): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(12), dp(10), dp(12))
+            background = roundedBackground(surface, 18)
+        }
+
+        val info = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { loadSavedProject(project.id) }
+        }
+
+        info.addView(TextView(this).apply {
+            text = project.name
+            textSize = 16f
+            maxLines = 1
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        })
+
+        info.addView(TextView(this).apply {
+            text = "${project.clipCount} clips  •  " +
+                "${formatTime(project.durationMs)}  •  " +
+                formatProjectDate(project.updatedAt)
+            textSize = 12f
+            maxLines = 1
+            setTextColor(textSecondary)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(4)
+            }
+        })
+
+        row.addView(
+            info,
+            LinearLayout.LayoutParams(
+                0,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                1f
+            )
+        )
+
+        row.addView(Button(this).apply {
+            text = "Open"
+            textSize = 11f
+            isAllCaps = false
+            setTextColor(Color.rgb(4, 24, 21))
+            backgroundTintList = ColorStateList.valueOf(primary)
+            setOnClickListener { loadSavedProject(project.id) }
+        }, LinearLayout.LayoutParams(dp(72), dp(44)))
+
+        row.addView(TextView(this).apply {
+            text = "×"
+            textSize = 26f
+            gravity = Gravity.CENTER
+            setTextColor(textSecondary)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Delete project"
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Delete project?")
+                    .setMessage("${project.name} will be removed from Cutrim.")
+                    .setPositiveButton("Delete") { _, _ ->
+                        deleteSavedProject(project.id)
+                        showHome()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+        return row
+    }
+
+    private fun projectsDirectory(): File {
+        return File(filesDir, "projects").apply { mkdirs() }
+    }
+
+    private fun projectFile(projectId: String): File {
+        val safeId = projectId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        return File(projectsDirectory(), "$safeId.json")
+    }
+
+    private fun persistCurrentProject(): Boolean {
+        if (editorClips.isEmpty()) return false
+
+        val projectId = currentProjectId ?: run {
+            val generated = "project_${System.currentTimeMillis()}"
+            currentProjectId = generated
+            generated
+        }
+
+        if (currentProjectName.isBlank()) {
+            currentProjectName = "Project ${formatProjectDate(System.currentTimeMillis())}"
+        }
+
+        val now = System.currentTimeMillis()
+        currentProjectUpdatedAt = now
+
+        return try {
+            val root = JSONObject().apply {
+                put("schemaVersion", 2)
+                put("id", projectId)
+                put("name", currentProjectName)
+                put("updatedAt", now)
+                put("selectedClipIndex", selectedClipIndex)
+                put("selectedAudioIndex", selectedAudioIndex)
+                put("exportHeight", exportHeight)
+                put("exportFps", exportFps)
+
+                put("clips", JSONArray().apply {
+                    editorClips.forEach { clip ->
+                        put(JSONObject().apply {
+                            put("id", clip.id)
+                            put("uri", clip.uri.toString())
+                            put("startMs", clip.startMs)
+                            put("endMs", clip.endMs)
+                            put("name", clip.name)
+                            put("filterName", clip.filterName)
+                            put("transitionName", clip.transitionName)
+                            put("effectName", clip.effectName)
+                            put("speed", clip.speed.toDouble())
+                            put("stickers", JSONArray().apply {
+                                clip.stickers.forEach { sticker -> put(sticker) }
+                            })
+                        })
+                    }
+                })
+
+                put("textOverlays", JSONArray().apply {
+                    textOverlays.forEach { overlay ->
+                        put(JSONObject().apply {
+                            put("text", overlay.text)
+                            put("clipId", overlay.clipId)
+                            put("sizeSp", overlay.sizeSp.toDouble())
+                            put("color", overlay.color)
+                        })
+                    }
+                })
+
+                put("audioTracks", JSONArray().apply {
+                    audioTracks.forEach { track ->
+                        put(JSONObject().apply {
+                            put("uri", track.uri.toString())
+                            put("name", track.name)
+                            put("type", track.type)
+                            put("volume", track.volume.toDouble())
+                            put("fadeIn", track.fadeIn)
+                            put("fadeOut", track.fadeOut)
+                        })
+                    }
+                })
+            }
+
+            val destination = projectFile(projectId)
+            val temporary = File(destination.parentFile, "${destination.name}.tmp")
+            temporary.writeText(root.toString())
+
+            if (destination.exists()) destination.delete()
+            if (!temporary.renameTo(destination)) {
+                destination.writeText(root.toString())
+                temporary.delete()
+            }
+
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun listSavedProjects(): List<ProjectSummary> {
+        val files = projectsDirectory()
+            .listFiles { file -> file.isFile && file.extension == "json" }
+            ?.toList()
+            ?: emptyList()
+
+        return files.mapNotNull { file ->
+            try {
+                val root = JSONObject(file.readText())
+                val clips = root.optJSONArray("clips") ?: JSONArray()
+                var durationMs = 0
+
+                for (i in 0 until clips.length()) {
+                    val clip = clips.optJSONObject(i) ?: continue
+                    val rawDuration =
+                        (clip.optInt("endMs") - clip.optInt("startMs")).coerceAtLeast(0)
+                    val speed = clip.optDouble("speed", 1.0).toFloat().coerceAtLeast(0.1f)
+                    durationMs += (rawDuration / speed).toInt()
+                }
+
+                ProjectSummary(
+                    id = root.optString("id", file.nameWithoutExtension),
+                    name = root.optString("name", "Untitled Project"),
+                    updatedAt = root.optLong("updatedAt", file.lastModified()),
+                    clipCount = clips.length(),
+                    durationMs = durationMs
+                )
+            } catch (_: Exception) {
+                null
+            }
+        }.sortedByDescending { it.updatedAt }
+    }
+
+    private fun loadSavedProject(projectId: String) {
+        val file = projectFile(projectId)
+        if (!file.exists()) {
+            toast("Project file is missing.")
+            showHome()
+            return
+        }
+
+        try {
+            val root = JSONObject(file.readText())
+            val restoredClips = mutableListOf<ClipSegment>()
+            val clips = root.optJSONArray("clips") ?: JSONArray()
+
+            for (i in 0 until clips.length()) {
+                val item = clips.optJSONObject(i) ?: continue
+                val stickers = mutableListOf<String>()
+                val stickerArray = item.optJSONArray("stickers") ?: JSONArray()
+                for (j in 0 until stickerArray.length()) {
+                    stickers.add(stickerArray.optString(j))
+                }
+
+                restoredClips.add(
+                    ClipSegment(
+                        id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                        uri = Uri.parse(item.getString("uri")),
+                        startMs = item.optInt("startMs", 0),
+                        endMs = item.optInt("endMs", 1),
+                        name = item.optString("name", "Video"),
+                        filterName = item.optString("filterName", "None"),
+                        transitionName = item.optString("transitionName", "None"),
+                        effectName = item.optString("effectName", "None"),
+                        speed = item.optDouble("speed", 1.0).toFloat(),
+                        stickers = stickers
+                    )
+                )
+            }
+
+            if (restoredClips.isEmpty()) {
+                toast("This project has no usable clips.")
+                return
+            }
+
+            editorClips.clear()
+            editorClips.addAll(restoredClips)
+
+            textOverlays.clear()
+            val texts = root.optJSONArray("textOverlays") ?: JSONArray()
+            for (i in 0 until texts.length()) {
+                val item = texts.optJSONObject(i) ?: continue
+                textOverlays.add(
+                    TextOverlay(
+                        text = item.optString("text", ""),
+                        clipId = item.optString("clipId").ifBlank { restoredClips.first().id },
+                        sizeSp = item.optDouble("sizeSp", 26.0).toFloat(),
+                        color = item.optInt("color", Color.WHITE)
+                    )
+                )
+            }
+
+            audioTracks.clear()
+            val audio = root.optJSONArray("audioTracks") ?: JSONArray()
+            for (i in 0 until audio.length()) {
+                val item = audio.optJSONObject(i) ?: continue
+                audioTracks.add(
+                    AudioTrack(
+                        uri = Uri.parse(item.getString("uri")),
+                        name = item.optString("name", "Audio"),
+                        type = item.optString("type", "Music"),
+                        volume = item.optDouble("volume", 1.0).toFloat(),
+                        fadeIn = item.optBoolean("fadeIn", false),
+                        fadeOut = item.optBoolean("fadeOut", false)
+                    )
+                )
+            }
+
+            currentProjectId = root.optString("id", projectId)
+            currentProjectName = root.optString("name", "Untitled Project")
+            currentProjectUpdatedAt = root.optLong("updatedAt", file.lastModified())
+            exportHeight = root.optInt("exportHeight", 720)
+            exportFps = root.optInt("exportFps", 30)
+
+            selectedClipIndex = root.optInt("selectedClipIndex", 0)
+                .coerceIn(0, editorClips.lastIndex)
+            selectedAudioIndex = if (audioTracks.isEmpty()) {
+                -1
+            } else {
+                root.optInt("selectedAudioIndex", 0)
+                    .coerceIn(0, audioTracks.lastIndex)
+            }
+
+            selectedVideos.clear()
+            editorClips.map { it.uri }.distinct().forEach { selectedVideos.add(it) }
+
+            undoStack.clear()
+            redoStack.clear()
+            showEditor()
+        } catch (_: Exception) {
+            toast("Unable to open this project.")
+        }
+    }
+
+    private fun deleteSavedProject(projectId: String) {
+        projectFile(projectId).delete()
+
+        if (currentProjectId == projectId) {
+            currentProjectId = null
+            currentProjectName = "Untitled Project"
+            currentProjectUpdatedAt = 0L
+            editorClips.clear()
+            textOverlays.clear()
+            audioTracks.clear()
+            selectedVideos.clear()
+            selectedClipIndex = 0
+            selectedAudioIndex = -1
+            undoStack.clear()
+            redoStack.clear()
+        }
+    }
+
+    private fun formatProjectDate(timestamp: Long): String {
+        return SimpleDateFormat("dd MMM yyyy HH:mm", Locale.getDefault())
+            .format(Date(timestamp))
     }
 
     private fun sectionTitle(
@@ -3076,6 +3670,9 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_VIDEO = 1001
         private const val REQUEST_AUDIO = 1002
+
+        private const val VIDEO_PICK_CREATE = 0
+        private const val VIDEO_PICK_APPEND = 1
 
         private const val SCREEN_HOME = 0
         private const val SCREEN_MEDIA = 1
