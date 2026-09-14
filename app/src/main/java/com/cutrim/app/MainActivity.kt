@@ -116,7 +116,8 @@ class MainActivity : Activity() {
         val name: String,
         val updatedAt: Long,
         val clipCount: Int,
-        val durationMs: Int
+        val durationMs: Int,
+        val previewUri: Uri? = null
     )
 
     private val backgroundColor = Color.rgb(8, 12, 16)
@@ -249,61 +250,55 @@ class MainActivity : Activity() {
         }
         stopEditorUpdates()
         screen = SCREEN_HOME
+        applyHomeSystemBars()
+
+        val homeWhite = Color.rgb(250, 250, 250)
+
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(homeWhite)
+        }
 
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            setBackgroundColor(backgroundColor)
+            setBackgroundColor(homeWhite)
             overScrollMode = View.OVER_SCROLL_NEVER
         }
 
-        val root = LinearLayout(this).apply {
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(20), dp(16), dp(28))
+            setBackgroundColor(homeWhite)
         }
 
-        root.addView(buildHeader())
-        root.addView(buildHero())
-
-        val recentHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(28)
-                bottomMargin = dp(12)
-            }
-        }
-
-        recentHeader.addView(TextView(this).apply {
-            text = "Recent projects"
-            textSize = 20f
-            setTextColor(textPrimary)
-            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-
-        recentHeader.addView(TextView(this).apply {
-            text = "Drafts"
-            textSize = 12f
-            setTextColor(textSecondary)
-            gravity = Gravity.CENTER
-            background = roundedBackground(surfaceAlt, 999)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-        })
-
-        root.addView(recentHeader)
-        root.addView(buildRecentProjects())
+        content.addView(buildReferenceHomeHero())
+        content.addView(buildReferenceProjectStrip())
+        content.addView(buildReferenceToolGrid())
 
         scroll.addView(
-            root,
+            content,
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         )
 
-        setContentView(scroll)
+        page.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+        page.addView(
+            buildReferenceBottomNav(),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(72)
+            )
+        )
+
+        setContentView(page)
     }
 
     private fun startNewProject() {
@@ -328,6 +323,7 @@ class MainActivity : Activity() {
     }
 
     private fun showMediaImport() {
+        applyDarkSystemBars()
         stopEditorUpdates()
         screen = SCREEN_MEDIA
 
@@ -477,6 +473,7 @@ class MainActivity : Activity() {
     }
 
     private fun showEditor() {
+        applyDarkSystemBars()
         if (editorClips.isEmpty()) {
             showMediaImport()
             return
@@ -3225,6 +3222,436 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applyHomeSystemBars() {
+        window.statusBarColor = Color.rgb(23, 153, 220)
+        window.navigationBarColor = Color.WHITE
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            window.decorView.systemUiVisibility =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                } else {
+                    0
+                }
+        }
+    }
+
+    private fun applyDarkSystemBars() {
+        window.statusBarColor = backgroundColor
+        window.navigationBarColor = backgroundColor
+        window.decorView.systemUiVisibility = 0
+    }
+
+    private fun buildReferenceHomeHero(): View {
+        val hero = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(20))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(
+                    Color.rgb(24, 150, 219),
+                    Color.rgb(17, 91, 188),
+                    Color.rgb(37, 198, 227)
+                )
+            )
+        }
+
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        top.addView(TextView(this).apply {
+            text = "◇  Try Standard 7 days for RM0"
+            textSize = 13f
+            setTextColor(Color.rgb(29, 31, 35))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(13), 0, dp(13), 0)
+            background = roundedBackground(Color.rgb(247, 248, 249), 999)
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            dp(45)
+        ))
+
+        top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+
+        top.addView(TextView(this).apply {
+            text = "⌕"
+            textSize = 30f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = roundedBackground(Color.argb(42, 0, 0, 0), 999)
+            contentDescription = "Search projects"
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                val projects = listSavedProjects()
+                if (projects.isEmpty()) {
+                    toast("No projects to search yet.")
+                } else {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Projects")
+                        .setItems(projects.map { it.name }.toTypedArray()) { _, which ->
+                            projects.getOrNull(which)?.let { loadSavedProject(it.id) }
+                        }
+                        .show()
+                }
+            }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+
+        hero.addView(top)
+
+        hero.addView(TextView(this).apply {
+            text = "Video create"
+            textSize = 18f
+            setTextColor(Color.argb(225, 255, 255, 255))
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(150)
+            }
+        })
+
+        hero.addView(TextView(this).apply {
+            text = "Get started  ›"
+            textSize = 34f
+            setTextColor(Color.WHITE)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+                bottomMargin = dp(22)
+            }
+        })
+
+        val cards = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            weightSum = 2f
+        }
+
+        cards.addView(
+            buildReferenceCreateCard(
+                symbol = "+",
+                title = "New video",
+                onClick = { startNewProject() }
+            ),
+            LinearLayout.LayoutParams(0, dp(184), 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+
+        cards.addView(
+            buildReferenceCreateCard(
+                symbol = "▣",
+                title = "Edit photo",
+                onClick = { toast("Photo editing is coming in the photo milestone.") }
+            ),
+            LinearLayout.LayoutParams(0, dp(184), 1f).apply {
+                marginStart = dp(6)
+            }
+        )
+
+        hero.addView(cards)
+        return hero
+    }
+
+    private fun buildReferenceCreateCard(
+        symbol: String,
+        title: String,
+        onClick: () -> Unit
+    ): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = roundedBackground(Color.argb(232, 250, 253, 255), 20)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+
+            addView(TextView(this@MainActivity).apply {
+                text = symbol
+                textSize = if (symbol == "+") 34f else 27f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                background = roundedBackground(Color.rgb(10, 17, 28), 9)
+            }, LinearLayout.LayoutParams(dp(42), dp(42)))
+
+            addView(TextView(this@MainActivity).apply {
+                text = title
+                textSize = 17f
+                setTextColor(Color.rgb(12, 15, 20))
+                setTypeface(Typeface.DEFAULT, Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(14)
+                }
+            })
+        }
+    }
+
+    private fun buildReferenceProjectStrip(): View {
+        val section = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), 0, dp(12))
+            setBackgroundColor(Color.rgb(250, 250, 250))
+        }
+
+        val projects = listSavedProjects()
+        val scroller = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, dp(16), 0)
+        }
+
+        projects.take(8).forEachIndexed { index, project ->
+            row.addView(
+                buildReferenceProjectTile(project),
+                LinearLayout.LayoutParams(dp(112), dp(112)).apply {
+                    if (index > 0) marginStart = dp(10)
+                }
+            )
+        }
+
+        val placeholders = (5 - projects.size.coerceAtMost(5)).coerceAtLeast(0)
+        repeat(placeholders) { index ->
+            row.addView(
+                FrameLayout(this).apply {
+                    background = roundedBackground(Color.rgb(242, 244, 246), 16)
+                },
+                LinearLayout.LayoutParams(dp(112), dp(112)).apply {
+                    if (projects.isNotEmpty() || index > 0) marginStart = dp(10)
+                }
+            )
+        }
+
+        scroller.addView(row)
+        section.addView(scroller, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(112)
+        ))
+        return section
+    }
+
+    private fun buildReferenceProjectTile(project: ProjectSummary): View {
+        val tile = FrameLayout(this).apply {
+            background = roundedBackground(Color.rgb(12, 15, 20), 16)
+            clipToOutline = true
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { loadSavedProject(project.id) }
+        }
+
+        val image = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.rgb(18, 22, 28))
+            contentDescription = project.name
+        }
+        project.previewUri?.let { uri ->
+            getVideoThumbnail(uri, 0)?.let { image.setImageBitmap(it) }
+        }
+        tile.addView(image, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+
+        tile.addView(View(this).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.TRANSPARENT, Color.argb(195, 0, 0, 0))
+            )
+        }, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(48),
+            Gravity.BOTTOM
+        ))
+
+        tile.addView(TextView(this).apply {
+            text = "✂ ${project.name.take(10)}"
+            textSize = 11f
+            maxLines = 1
+            setTextColor(Color.WHITE)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(7), 0, dp(7), dp(4))
+        }, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(34),
+            Gravity.BOTTOM
+        ))
+
+        return tile
+    }
+
+    private fun buildReferenceToolGrid(): View {
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(26))
+            setBackgroundColor(Color.rgb(250, 250, 250))
+        }
+
+        val tools = listOf(
+            Triple("▻", "AutoCut", "Create automatically from selected clips."),
+            Triple("◎", "Retouch", "Retouch tools are coming in a later milestone."),
+            Triple("✦", "AI generator", "AI generation is planned for a later milestone."),
+            Triple("▣", "Photo tools", "Photo tools are coming in the photo milestone."),
+            Triple("◉", "Shoot and record", "Camera capture is planned for a later milestone."),
+            Triple("↗", "Auto enhance", "Auto enhance is planned for a later milestone."),
+            Triple("CC", "Auto captions", "Auto captions are planned for the captions milestone."),
+            Triple("✂", "AI clipper", "AI clipper is planned for a later milestone."),
+            Triple("◌", "Remove background", "Background removal is planned for a later milestone."),
+            Triple("▧", "Image tools", "Image tools are planned for a later milestone."),
+            Triple("☁", "Cloud", "Cloud projects are not connected yet."),
+            Triple("◔", "Adjust", "Open a video project to use color adjustments.")
+        )
+
+        tools.chunked(3).forEachIndexed { rowIndex, rowTools ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 3f
+            }
+            rowTools.forEach { (symbol, label, message) ->
+                row.addView(
+                    referenceToolCell(symbol, label) {
+                        if (label == "AutoCut") {
+                            startNewProject()
+                        } else {
+                            toast(message)
+                        }
+                    },
+                    LinearLayout.LayoutParams(0, dp(142), 1f)
+                )
+            }
+            while (row.childCount < 3) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, dp(142), 1f))
+            }
+            wrap.addView(row, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(142)
+            ).apply {
+                if (rowIndex > 0) topMargin = dp(2)
+            })
+        }
+        return wrap
+    }
+
+    private fun referenceToolCell(
+        symbol: String,
+        label: String,
+        onClick: () -> Unit
+    ): View {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+
+            addView(TextView(this@MainActivity).apply {
+                text = symbol
+                textSize = if (symbol.length > 1) 18f else 29f
+                gravity = Gravity.CENTER
+                setTextColor(Color.rgb(48, 51, 56))
+                setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            }, LinearLayout.LayoutParams(dp(52), dp(48)))
+
+            addView(TextView(this@MainActivity).apply {
+                text = label
+                textSize = 13f
+                gravity = Gravity.CENTER
+                maxLines = 2
+                setTextColor(Color.rgb(23, 25, 29))
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = dp(7)
+                    marginStart = dp(3)
+                    marginEnd = dp(3)
+                }
+            })
+        }
+    }
+
+    private fun buildReferenceBottomNav(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            weightSum = 5f
+            setPadding(dp(4), dp(4), dp(4), dp(3))
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(5).toFloat()
+        }
+
+        listOf(
+            Triple("✂", "Edit", true),
+            Triple("▣", "Templates", false),
+            Triple("✦", "AI Lab", false),
+            Triple("□", "Projects", false),
+            Triple("○", "Me", false)
+        ).forEach { (symbol, label, active) ->
+            bar.addView(
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        when (label) {
+                            "Edit" -> Unit
+                            "Projects" -> {
+                                val projects = listSavedProjects()
+                                if (projects.isEmpty()) toast("No saved projects yet.")
+                                else AlertDialog.Builder(this@MainActivity)
+                                    .setTitle("Projects")
+                                    .setItems(projects.map { it.name }.toTypedArray()) { _, which ->
+                                        projects.getOrNull(which)?.let { loadSavedProject(it.id) }
+                                    }
+                                    .show()
+                            }
+                            else -> toast("$label is coming in a later milestone.")
+                        }
+                    }
+
+                    addView(TextView(this@MainActivity).apply {
+                        text = symbol
+                        textSize = 24f
+                        gravity = Gravity.CENTER
+                        setTextColor(
+                            if (active) Color.rgb(9, 14, 20)
+                            else Color.rgb(166, 176, 185)
+                        )
+                        setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                    }, LinearLayout.LayoutParams(dp(35), dp(33)))
+
+                    addView(TextView(this@MainActivity).apply {
+                        text = label
+                        textSize = 10f
+                        gravity = Gravity.CENTER
+                        setTextColor(
+                            if (active) Color.rgb(9, 14, 20)
+                            else Color.rgb(166, 176, 185)
+                        )
+                        if (active) setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+                    })
+                },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+            )
+        }
+        return bar
+    }
+
     private fun buildHeader(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -3722,12 +4149,22 @@ class MainActivity : Activity() {
                     durationMs += (rawDuration / speed).toInt()
                 }
 
+                val previewUri = if (clips.length() > 0) {
+                    clips.optJSONObject(0)
+                        ?.optString("uri")
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { Uri.parse(it) }
+                } else {
+                    null
+                }
+
                 ProjectSummary(
                     id = root.optString("id", file.nameWithoutExtension),
                     name = root.optString("name", "Untitled Project"),
                     updatedAt = root.optLong("updatedAt", file.lastModified()),
                     clipCount = clips.length(),
-                    durationMs = durationMs
+                    durationMs = durationMs,
+                    previewUri = previewUri
                 )
             } catch (_: Exception) {
                 null
