@@ -150,6 +150,8 @@ class MainActivity : Activity() {
     private var seekBar: SeekBar? = null
     private var timeText: TextView? = null
     private var editorClipTitle: TextView? = null
+    private var editorToolsHost: LinearLayout? = null
+    private var editorModeBarHost: FrameLayout? = null
     private var overlayLayer: FrameLayout? = null
     private var filterOverlay: View? = null
     private var creativeStatusText: TextView? = null
@@ -158,6 +160,7 @@ class MainActivity : Activity() {
     private var audioPlayer: MediaPlayer? = null
     private var selectedClipIndex = 0
     private var selectedAudioIndex = -1
+    private var activeEditorPanel = PANEL_CLIP
     private var pendingAudioType = "Music"
     private var videoPickerMode = VIDEO_PICK_CREATE
     private var userSeeking = false
@@ -250,18 +253,46 @@ class MainActivity : Activity() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(backgroundColor)
+            overScrollMode = View.OVER_SCROLL_NEVER
         }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(26), dp(20), dp(32))
+            setPadding(dp(16), dp(20), dp(16), dp(28))
         }
 
         root.addView(buildHeader())
         root.addView(buildHero())
-        root.addView(sectionTitle("Quick Start", 28))
-        root.addView(buildQuickActions())
-        root.addView(sectionTitle("Recent Projects", 30))
+
+        val recentHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(28)
+                bottomMargin = dp(12)
+            }
+        }
+
+        recentHeader.addView(TextView(this).apply {
+            text = "Recent projects"
+            textSize = 20f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        recentHeader.addView(TextView(this).apply {
+            text = "Drafts"
+            textSize = 12f
+            setTextColor(textSecondary)
+            gravity = Gravity.CENTER
+            background = roundedBackground(surfaceAlt, 999)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+        })
+
+        root.addView(recentHeader)
         root.addView(buildRecentProjects())
 
         scroll.addView(
@@ -289,6 +320,7 @@ class MainActivity : Activity() {
         audioTracks.clear()
         selectedClipIndex = 0
         selectedAudioIndex = -1
+        activeEditorPanel = PANEL_CLIP
         undoStack.clear()
         redoStack.clear()
 
@@ -433,6 +465,7 @@ class MainActivity : Activity() {
         audioTracks.clear()
         selectedAudioIndex = -1
         selectedClipIndex = 0
+        activeEditorPanel = PANEL_CLIP
 
         val now = System.currentTimeMillis()
         currentProjectId = "project_$now"
@@ -452,28 +485,27 @@ class MainActivity : Activity() {
         stopEditorUpdates()
         screen = SCREEN_EDITOR
 
-        selectedClipIndex =
-            selectedClipIndex.coerceIn(0, editorClips.lastIndex)
+        selectedClipIndex = selectedClipIndex.coerceIn(0, editorClips.lastIndex)
 
         val editorScroll = ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(backgroundColor)
+            overScrollMode = View.OVER_SCROLL_NEVER
         }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(18), dp(16), dp(20))
+            setPadding(dp(12), dp(12), dp(12), dp(20))
             setBackgroundColor(backgroundColor)
         }
 
         root.addView(buildEditorHeader())
 
         editorClipTitle = TextView(this).apply {
-            textSize = 13f
+            textSize = 12f
             maxLines = 1
             setTextColor(textSecondary)
             gravity = Gravity.CENTER
-
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -482,11 +514,11 @@ class MainActivity : Activity() {
                 bottomMargin = dp(8)
             }
         }
-
         root.addView(editorClipTitle)
 
         val previewCard = FrameLayout(this).apply {
-            background = roundedBackground(Color.BLACK, 18)
+            background = roundedBackground(Color.BLACK, 14)
+            clipToOutline = true
         }
 
         videoView = VideoView(this).apply {
@@ -494,16 +526,13 @@ class MainActivity : Activity() {
 
             setOnPreparedListener { mediaPlayer ->
                 val clip = currentClip() ?: return@setOnPreparedListener
-
                 try {
-                    mediaPlayer.playbackParams =
-                        mediaPlayer.playbackParams.setSpeed(clip.speed)
+                    mediaPlayer.playbackParams = mediaPlayer.playbackParams.setSpeed(clip.speed)
                 } catch (_: Exception) {
                 }
 
                 seekBar?.max = clip.lengthMs()
                 seekBar?.progress = 0
-
                 seekTo(clip.startMs)
                 updateTime(0, clip.lengthMs())
                 updatePlayButton()
@@ -511,7 +540,6 @@ class MainActivity : Activity() {
 
             setOnCompletionListener {
                 val clip = currentClip() ?: return@setOnCompletionListener
-
                 seekTo(clip.startMs)
                 updatePlayButton()
                 updateTime(0, clip.lengthMs())
@@ -551,29 +579,23 @@ class MainActivity : Activity() {
             previewCard,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(270)
+                dp(300)
             )
         )
 
-        val controls = LinearLayout(this).apply {
+        val transport = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(10)
-            }
+            setPadding(dp(4), dp(8), dp(4), 0)
         }
 
         playButton = Button(this).apply {
             text = "▶"
-            textSize = 18f
+            textSize = 17f
             isAllCaps = false
-            setTextColor(Color.rgb(4, 24, 21))
-            backgroundTintList = ColorStateList.valueOf(primary)
-
+            setTextColor(Color.BLACK)
+            backgroundTintList = ColorStateList.valueOf(textPrimary)
+            setPadding(0, 0, 0, 0)
             setOnClickListener {
                 val player = videoView ?: return@setOnClickListener
                 val clip = currentClip() ?: return@setOnClickListener
@@ -584,42 +606,38 @@ class MainActivity : Activity() {
                     if (player.currentPosition >= clip.endMs - 80) {
                         player.seekTo(clip.startMs)
                     }
-
                     player.start()
                 }
-
                 updatePlayButton()
             }
         }
-
-        controls.addView(
-            playButton,
-            LinearLayout.LayoutParams(dp(62), dp(46))
-        )
+        transport.addView(playButton, LinearLayout.LayoutParams(dp(42), dp(42)))
 
         timeText = TextView(this).apply {
             text = "00:00 / 00:00"
-            textSize = 13f
+            textSize = 12f
             setTextColor(textPrimary)
             gravity = Gravity.CENTER_VERTICAL
-
-            layoutParams = LinearLayout.LayoutParams(
-                0,
-                dp(46),
-                1f
-            ).apply {
+        }
+        transport.addView(
+            timeText,
+            LinearLayout.LayoutParams(0, dp(42), 1f).apply {
                 marginStart = dp(12)
             }
-        }
+        )
 
-        controls.addView(timeText)
-        root.addView(controls)
+        transport.addView(compactEditorIcon("↶", "Undo") { undoEdit() })
+        transport.addView(compactEditorIcon("↷", "Redo") { redoEdit() }.apply {
+            (layoutParams as? LinearLayout.LayoutParams)?.marginStart = dp(4)
+        })
+        root.addView(transport)
 
         seekBar = SeekBar(this).apply {
             max = 100
             progress = 0
-            progressTintList = ColorStateList.valueOf(primary)
-            thumbTintList = ColorStateList.valueOf(primary)
+            progressTintList = ColorStateList.valueOf(textPrimary)
+            thumbTintList = ColorStateList.valueOf(textPrimary)
+            setPadding(0, 0, 0, 0)
 
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {
@@ -629,11 +647,9 @@ class MainActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {
                     val clip = currentClip()
                     val relative = seekBar?.progress ?: 0
-
                     if (clip != null) {
                         videoView?.seekTo(clip.startMs + relative)
                     }
-
                     userSeeking = false
                 }
 
@@ -643,68 +659,78 @@ class MainActivity : Activity() {
                     fromUser: Boolean
                 ) {
                     if (fromUser) {
-                        updateTime(
-                            progress,
-                            currentClip()?.lengthMs() ?: 0
-                        )
+                        updateTime(progress, currentClip()?.lengthMs() ?: 0)
                     }
                 }
             })
         }
-
         root.addView(
             seekBar,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(42)
+                dp(30)
             )
         )
 
-        root.addView(sectionTitle("Timeline", 8))
+        val timelineHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(8)
+            }
+        }
+        timelineHeader.addView(TextView(this).apply {
+            text = "Timeline"
+            textSize = 15f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        timelineHeader.addView(TextView(this).apply {
+            text = "${editorClips.size} clips  •  ${formatTime(projectDurationMs())}"
+            textSize = 11f
+            setTextColor(textSecondary)
+        })
+        root.addView(timelineHeader)
 
         root.addView(
             buildTimeline(),
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(104)
+                dp(122)
             )
         )
 
+        editorModeBarHost = FrameLayout(this).also { host ->
+            host.addView(buildEditorToolSwitcher())
+        }
         root.addView(
-            buildEditActions(),
+            editorModeBarHost,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(68)
+            ).apply {
+                topMargin = dp(10)
+            }
+        )
+
+        editorToolsHost = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = roundedBackground(surface, 18)
+            setPadding(dp(8), dp(8), dp(8), dp(10))
+        }
+        root.addView(
+            editorToolsHost,
             LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(12)
+                topMargin = dp(8)
             }
         )
-
-        root.addView(sectionTitle("Export", 12))
-        root.addView(buildExportTools())
-
-        root.addView(sectionTitle("Creative Tools", 12))
-        root.addView(buildCreativeTools())
-
-        root.addView(sectionTitle("Text", 12))
-        root.addView(buildTextTools())
-
-        root.addView(sectionTitle("Audio", 12))
-        root.addView(buildAudioTools())
-
-        root.addView(TextView(this).apply {
-            text = "V8 autosaves projects and exports the edited timeline as MP4."
-            textSize = 12f
-            setTextColor(textSecondary)
-            gravity = Gravity.CENTER
-
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(10)
-            }
-        })
 
         editorScroll.addView(
             root,
@@ -715,9 +741,147 @@ class MainActivity : Activity() {
         )
 
         setContentView(editorScroll)
-
+        refreshEditorToolArea()
         loadClip(selectedClipIndex)
         startEditorUpdates()
+    }
+
+    private fun compactEditorIcon(
+        symbol: String,
+        description: String,
+        action: () -> Unit
+    ): TextView {
+        return TextView(this).apply {
+            text = symbol
+            textSize = 22f
+            gravity = Gravity.CENTER
+            setTextColor(textPrimary)
+            background = roundedBackground(surfaceAlt, 12)
+            isClickable = true
+            isFocusable = true
+            contentDescription = description
+            setOnClickListener { action() }
+            layoutParams = LinearLayout.LayoutParams(dp(42), dp(42))
+        }
+    }
+
+    private fun projectDurationMs(): Int {
+        return editorClips.sumOf { clip ->
+            (clip.lengthMs() / clip.speed.coerceAtLeast(0.1f)).toInt()
+        }
+    }
+
+    private fun refreshEditorToolArea() {
+        val tools = editorToolsHost ?: return
+        tools.removeAllViews()
+
+        val title = when (activeEditorPanel) {
+            PANEL_AUDIO -> "Audio"
+            PANEL_TEXT -> "Text"
+            PANEL_EFFECTS -> "Effects"
+            PANEL_EXPORT -> "Export"
+            else -> "Edit clip"
+        }
+
+        tools.addView(TextView(this).apply {
+            text = title
+            textSize = 14f
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            setPadding(dp(4), dp(2), dp(4), dp(8))
+        })
+
+        val panel = when (activeEditorPanel) {
+            PANEL_AUDIO -> buildAudioTools()
+            PANEL_TEXT -> buildTextTools()
+            PANEL_EFFECTS -> buildCreativeTools()
+            PANEL_EXPORT -> buildExportTools()
+            else -> buildEditActions()
+        }
+
+        tools.addView(
+            panel,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
+
+        editorModeBarHost?.removeAllViews()
+        editorModeBarHost?.addView(buildEditorToolSwitcher())
+    }
+
+    private fun buildEditorToolSwitcher(): View {
+        val scroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isFillViewport = true
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), dp(6), dp(2), dp(6))
+        }
+
+        val items = listOf(
+            Triple("✂", "Edit", PANEL_CLIP),
+            Triple("♫", "Audio", PANEL_AUDIO),
+            Triple("T", "Text", PANEL_TEXT),
+            Triple("✦", "Effects", PANEL_EFFECTS),
+            Triple("⇧", "Export", PANEL_EXPORT)
+        )
+
+        items.forEach { (icon, label, panel) ->
+            val selected = activeEditorPanel == panel
+            val item = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(5), dp(12), dp(5))
+                background = if (selected) {
+                    roundedBackground(surfaceAlt, 14)
+                } else {
+                    roundedBackground(Color.TRANSPARENT, 14)
+                }
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (activeEditorPanel != panel) {
+                        activeEditorPanel = panel
+                        refreshEditorToolArea()
+                    }
+                }
+            }
+
+            item.addView(TextView(this).apply {
+                text = icon
+                textSize = 18f
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) primary else textPrimary)
+            })
+            item.addView(TextView(this).apply {
+                text = label
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(if (selected) primary else textSecondary)
+            })
+
+            row.addView(
+                item,
+                LinearLayout.LayoutParams(dp(76), dp(56)).apply {
+                    marginEnd = dp(4)
+                }
+            )
+        }
+
+        scroll.addView(
+            row,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        return scroll
     }
 
     private fun buildEditActions(): View {
@@ -2321,50 +2485,57 @@ class MainActivity : Activity() {
 
         row.addView(TextView(this).apply {
             text = "‹"
-            textSize = 38f
+            textSize = 36f
             gravity = Gravity.CENTER
             setTextColor(textPrimary)
             isClickable = true
             isFocusable = true
             contentDescription = "Back to projects"
-
             setOnClickListener { showHome() }
+        }, LinearLayout.LayoutParams(dp(42), dp(44)))
 
-        }, LinearLayout.LayoutParams(dp(44), dp(44)))
-
-        row.addView(TextView(this).apply {
-            text = currentProjectName
-            textSize = 18f
-            maxLines = 1
-            setTextColor(textPrimary)
-            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            gravity = Gravity.CENTER_VERTICAL
+        val titleWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
             isClickable = true
             isFocusable = true
             contentDescription = "Rename project"
             setOnClickListener { showRenameProjectDialog() }
+        }
 
-        }, LinearLayout.LayoutParams(
-            0,
-            dp(44),
-            1f
-        ))
+        titleWrap.addView(TextView(this).apply {
+            text = currentProjectName
+            textSize = 15f
+            maxLines = 1
+            gravity = Gravity.CENTER
+            setTextColor(textPrimary)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        })
+        titleWrap.addView(TextView(this).apply {
+            text = "Autosaved"
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(textSecondary)
+        })
+
+        row.addView(
+            titleWrap,
+            LinearLayout.LayoutParams(0, dp(44), 1f)
+        )
 
         row.addView(Button(this).apply {
-            text = "Save"
-            textSize = 12f
+            text = "Export"
+            textSize = 11f
             isAllCaps = false
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(Color.rgb(4, 24, 21))
-            backgroundTintList = ColorStateList.valueOf(primary)
+            setTextColor(Color.BLACK)
+            backgroundTintList = ColorStateList.valueOf(textPrimary)
+            setPadding(dp(8), 0, dp(8), 0)
             setOnClickListener {
-                if (persistCurrentProject()) {
-                    toast("Project saved.")
-                } else {
-                    toast("Unable to save project.")
-                }
+                activeEditorPanel = PANEL_EXPORT
+                refreshEditorToolArea()
             }
-        }, LinearLayout.LayoutParams(dp(72), dp(44)))
+        }, LinearLayout.LayoutParams(dp(78), dp(40)))
 
         return row
     }
@@ -2394,8 +2565,16 @@ class MainActivity : Activity() {
     }
 
     private fun buildTimeline(): View {
+        val frame = FrameLayout(this).apply {
+            background = roundedBackground(Color.rgb(12, 17, 22), 16)
+            setPadding(0, dp(8), 0, dp(8))
+        }
+
         val scroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
+            setPadding(dp(54), 0, dp(54), 0)
         }
 
         val row = LinearLayout(this).apply {
@@ -2407,15 +2586,30 @@ class MainActivity : Activity() {
             val timelineSeconds =
                 (clip.lengthMs() / clip.speed.coerceAtLeast(0.1f)) / 1000f
             val clipWidth =
-                (timelineSeconds * 42f).toInt().coerceIn(dp(96), dp(280))
+                (timelineSeconds * 46f).toInt().coerceIn(dp(92), dp(300))
 
             row.addView(
                 buildTimelineClip(clip, index),
-                LinearLayout.LayoutParams(clipWidth, dp(94)).apply {
-                    marginEnd = dp(10)
+                LinearLayout.LayoutParams(clipWidth, dp(98)).apply {
+                    marginEnd = dp(5)
                 }
             )
         }
+
+        row.addView(TextView(this).apply {
+            text = "+"
+            textSize = 24f
+            gravity = Gravity.CENTER
+            setTextColor(textPrimary)
+            background = roundedBorderBackground(surfaceAlt, Color.rgb(72, 82, 91), 14, 1)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Add media"
+            setOnClickListener { openVideoPicker(VIDEO_PICK_APPEND) }
+        }, LinearLayout.LayoutParams(dp(54), dp(98)).apply {
+            marginStart = dp(2)
+            marginEnd = dp(54)
+        })
 
         scroll.addView(
             row,
@@ -2425,7 +2619,27 @@ class MainActivity : Activity() {
             )
         )
 
-        return scroll
+        frame.addView(
+            scroll,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        frame.addView(View(this).apply {
+            setBackgroundColor(Color.WHITE)
+            elevation = dp(4).toFloat()
+        }, FrameLayout.LayoutParams(dp(2), dp(104), Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL))
+
+        frame.addView(TextView(this).apply {
+            text = "▼"
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+        }, FrameLayout.LayoutParams(dp(20), dp(18), Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+
+        return frame
     }
 
     private fun buildTimelineClip(
@@ -2535,6 +2749,8 @@ class MainActivity : Activity() {
         seekBar = null
         timeText = null
         editorClipTitle = null
+        editorToolsHost = null
+        editorModeBarHost = null
         overlayLayer = null
         filterOverlay = null
         creativeStatusText = null
@@ -3020,34 +3236,32 @@ class MainActivity : Activity() {
         }
 
         titleWrap.addView(TextView(this).apply {
-            text = "CUTRIM"
-            textSize = 29f
+            text = "Cutrim"
+            textSize = 27f
             setTextColor(textPrimary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         })
 
         titleWrap.addView(TextView(this).apply {
-            text = "Create. Edit. Share."
-            textSize = 13f
+            text = "Mobile video editor"
+            textSize = 11f
             setTextColor(textSecondary)
         })
 
         row.addView(
             titleWrap,
-            LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f
-            )
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         )
 
         row.addView(TextView(this).apply {
-            text = "●"
-            textSize = 24f
+            text = "C"
+            textSize = 16f
             gravity = Gravity.CENTER
-            setTextColor(primary)
+            setTextColor(backgroundColor)
+            setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+            background = roundedBackground(textPrimary, 999)
             contentDescription = "Cutrim"
-        })
+        }, LinearLayout.LayoutParams(dp(38), dp(38)))
 
         return row
     }
@@ -3055,59 +3269,80 @@ class MainActivity : Activity() {
     private fun buildHero(): View {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22), dp(24), dp(22), dp(24))
-
+            setPadding(dp(18), dp(20), dp(18), dp(18))
             background = roundedGradient(
-                Color.rgb(20, 48, 49),
-                Color.rgb(15, 27, 32),
-                24
+                Color.rgb(28, 35, 42),
+                Color.rgb(14, 20, 25),
+                22
             )
-
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(28)
+                topMargin = dp(24)
             }
         }
 
         card.addView(TextView(this).apply {
-            text = "Your story,\nyour cut."
-            textSize = 31f
+            text = "Create something new"
+            textSize = 24f
             setTextColor(textPrimary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            setLineSpacing(0f, 0.96f)
         })
 
         card.addView(TextView(this).apply {
-            text = "Start with a video from your device."
-            textSize = 14f
-            setTextColor(Color.rgb(189, 206, 207))
-
+            text = "Import clips and start editing in seconds."
+            textSize = 13f
+            setTextColor(textSecondary)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(10)
+                topMargin = dp(5)
             }
         })
 
         card.addView(Button(this).apply {
-            text = "＋  New Project"
-            textSize = 16f
+            text = "＋  New project"
+            textSize = 15f
             isAllCaps = false
-            setTextColor(Color.rgb(4, 24, 21))
+            setTextColor(Color.BLACK)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
-            backgroundTintList = ColorStateList.valueOf(primary)
-
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(56)
-            ).apply {
-                topMargin = dp(24)
-            }
-
+            backgroundTintList = ColorStateList.valueOf(textPrimary)
             setOnClickListener { startNewProject() }
+        }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dp(54)
+        ).apply {
+            topMargin = dp(20)
+        })
+
+        val chips = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        listOf("Multi-clip", "Autosave", "MP4 export").forEachIndexed { index, label ->
+            chips.addView(TextView(this).apply {
+                text = label
+                textSize = 10f
+                gravity = Gravity.CENTER
+                setTextColor(textSecondary)
+                background = roundedBackground(surfaceAlt, 999)
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                if (index > 0) marginStart = dp(6)
+            })
+        }
+
+        card.addView(chips, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = dp(12)
         })
 
         return card
@@ -3267,78 +3502,106 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(10), dp(12))
+            setPadding(dp(10), dp(10), dp(8), dp(10))
             background = roundedBackground(surface, 18)
-        }
-
-        val info = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
             isClickable = true
             isFocusable = true
             setOnClickListener { loadSavedProject(project.id) }
         }
 
+        val thumbnail = FrameLayout(this).apply {
+            background = roundedGradient(
+                Color.rgb(42, 51, 60),
+                Color.rgb(23, 29, 35),
+                14
+            )
+        }
+        thumbnail.addView(TextView(this).apply {
+            text = "▶"
+            textSize = 18f
+            gravity = Gravity.CENTER
+            setTextColor(textPrimary)
+        }, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        row.addView(thumbnail, LinearLayout.LayoutParams(dp(72), dp(72)))
+
+        val info = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), 0, dp(8), 0)
+        }
+
         info.addView(TextView(this).apply {
             text = project.name
-            textSize = 16f
+            textSize = 15f
             maxLines = 1
             setTextColor(textPrimary)
             setTypeface(Typeface.DEFAULT, Typeface.BOLD)
         })
 
         info.addView(TextView(this).apply {
-            text = "${project.clipCount} clips  •  " +
-                "${formatTime(project.durationMs)}  •  " +
-                formatProjectDate(project.updatedAt)
-            textSize = 12f
+            text = "${formatTime(project.durationMs)}  •  ${project.clipCount} clips"
+            textSize = 11f
             maxLines = 1
             setTextColor(textSecondary)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = dp(4)
+                topMargin = dp(5)
+            }
+        })
+
+        info.addView(TextView(this).apply {
+            text = "Edited ${formatProjectDate(project.updatedAt)}"
+            textSize = 10f
+            maxLines = 1
+            setTextColor(Color.rgb(111, 123, 133))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(3)
             }
         })
 
         row.addView(
             info,
-            LinearLayout.LayoutParams(
-                0,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                1f
-            )
+            LinearLayout.LayoutParams(0, dp(72), 1f)
         )
 
-        row.addView(Button(this).apply {
-            text = "Open"
-            textSize = 11f
-            isAllCaps = false
-            setTextColor(Color.rgb(4, 24, 21))
-            backgroundTintList = ColorStateList.valueOf(primary)
-            setOnClickListener { loadSavedProject(project.id) }
-        }, LinearLayout.LayoutParams(dp(72), dp(44)))
-
         row.addView(TextView(this).apply {
-            text = "×"
-            textSize = 26f
+            text = "⋮"
+            textSize = 24f
             gravity = Gravity.CENTER
             setTextColor(textSecondary)
             isClickable = true
             isFocusable = true
-            contentDescription = "Delete project"
-            setOnClickListener {
+            contentDescription = "Project options"
+            setOnClickListener { view ->
+                view.isPressed = false
                 AlertDialog.Builder(this@MainActivity)
-                    .setTitle("Delete project?")
-                    .setMessage("${project.name} will be removed from Cutrim.")
-                    .setPositiveButton("Delete") { _, _ ->
-                        deleteSavedProject(project.id)
-                        showHome()
+                    .setTitle(project.name)
+                    .setItems(arrayOf("Open", "Delete")) { _, which ->
+                        if (which == 0) {
+                            loadSavedProject(project.id)
+                        } else {
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("Delete project?")
+                                .setMessage("${project.name} will be removed from Cutrim.")
+                                .setPositiveButton("Delete") { _, _ ->
+                                    deleteSavedProject(project.id)
+                                    showHome()
+                                }
+                                .setNegativeButton("Cancel", null)
+                                .show()
+                        }
                     }
-                    .setNegativeButton("Cancel", null)
                     .show()
             }
-        }, LinearLayout.LayoutParams(dp(44), dp(44)))
+        }, LinearLayout.LayoutParams(dp(42), dp(60)))
 
         return row
     }
@@ -3567,6 +3830,7 @@ class MainActivity : Activity() {
 
             undoStack.clear()
             redoStack.clear()
+            activeEditorPanel = PANEL_CLIP
             showEditor()
         } catch (_: Exception) {
             toast("Unable to open this project.")
@@ -3586,6 +3850,7 @@ class MainActivity : Activity() {
             selectedVideos.clear()
             selectedClipIndex = 0
             selectedAudioIndex = -1
+            activeEditorPanel = PANEL_CLIP
             undoStack.clear()
             redoStack.clear()
         }
@@ -3677,6 +3942,12 @@ class MainActivity : Activity() {
         private const val SCREEN_HOME = 0
         private const val SCREEN_MEDIA = 1
         private const val SCREEN_EDITOR = 2
+
+        private const val PANEL_CLIP = 0
+        private const val PANEL_AUDIO = 1
+        private const val PANEL_TEXT = 2
+        private const val PANEL_EFFECTS = 3
+        private const val PANEL_EXPORT = 4
 
         private const val MIN_CLIP_MS = 250
         private const val MAX_HISTORY = 30
